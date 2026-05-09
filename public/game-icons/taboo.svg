@@ -1,0 +1,21 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="tabooBlob" x1="54" y1="50" x2="198" y2="208" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FDE68A"/>
+      <stop offset="1" stop-color="#FB7185"/>
+    </linearGradient>
+    <filter id="tabooShadow" x="28" y="38" width="200" height="186" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="14" stdDeviation="12" flood-color="#64748B" flood-opacity="0.15"/>
+    </filter>
+  </defs>
+  <g filter="url(#tabooShadow)">
+    <path d="M54 135C47 84 83 52 129 53C176 54 207 88 202 137C198 184 163 207 115 202C77 198 60 174 54 135Z" fill="url(#tabooBlob)"/>
+    <circle cx="106" cy="125" r="10" fill="#7F1D1D"/>
+    <circle cx="151" cy="125" r="10" fill="#7F1D1D"/>
+    <path d="M107 158H153" stroke="#7F1D1D" stroke-width="9" stroke-linecap="round"/>
+    <rect x="145" y="62" width="58" height="58" rx="18" fill="white" fill-opacity="0.72"/>
+    <path d="M162 80L187 105M187 80L162 105" stroke="#F43F5E" stroke-width="8" stroke-linecap="round"/>
+    <path d="M72 76L62 66M59 96H44" stroke="#FB7185" stroke-width="8" stroke-linecap="round"/>
+    <path d="M195 176L202 191L217 198L202 204L195 220L189 204L173 198L189 191L195 176Z" fill="#F59E0B"/>
+  </g>
+</svg>

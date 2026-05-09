@@ -7,6 +7,8 @@ type ValidateRequest = {
   prompt?: string;
   guidance?: string;
   answer?: string;
+  validationMode?: "open" | "finite";
+  acceptedAnswers?: string[];
 };
 
 type OpenAIResponse = {
@@ -36,12 +38,28 @@ export async function POST(request: Request) {
   const prompt = body.prompt?.trim() ?? "";
   const guidance = body.guidance?.trim() ?? "";
   const answer = body.answer?.trim() ?? "";
+  const validationMode = body.validationMode ?? "open";
+  const acceptedAnswers = body.acceptedAnswers ?? [];
 
   if (!prompt || !answer) {
     return NextResponse.json(
       { error: "Missing prompt or answer." },
       { status: 400 },
     );
+  }
+
+  if (validationMode === "finite") {
+    const normalizedAnswer = normalizeAnswer(answer);
+    const matchedAnswer = acceptedAnswers.find(
+      (acceptedAnswer) => normalizeAnswer(acceptedAnswer) === normalizedAnswer,
+    );
+
+    return NextResponse.json({
+      counts: Boolean(matchedAnswer),
+      canonicalAnswer: matchedAnswer ?? answer,
+      normalizedAnswer: normalizeAnswer(matchedAnswer ?? answer),
+      reason: matchedAnswer ? "Accepted" : "Not in the accepted answer set",
+    });
   }
 
   if (!apiKey) {
@@ -60,11 +78,29 @@ export async function POST(request: Request) {
     body: JSON.stringify({
       model: "gpt-4.1-nano",
       max_output_tokens: 80,
+      temperature: 0,
       input: [
         {
           role: "system",
           content:
-            "You validate fast party trivia answers. Decide if the user's answer satisfies the prompt. Be permissive with synonyms and common names. Return only JSON.",
+            [
+              "You are a strict factual validator for a trivia elimination game.",
+              "Your job is not to be generous. Your job is to prevent wrong answers from counting.",
+              "The user's answer counts only if it satisfies the entire question exactly.",
+              "Parse every word of the prompt as a required constraint.",
+              "Every qualifier matters: location, capital-city status, borders, flag features, continent, time period, category, material, authorship, membership, rank, order, quantity, or any other condition.",
+              "Do not accept an answer just because it belongs to the broad category.",
+              "For location prompts, verify the answer is actually in the requested place.",
+              "For capital-city prompts, verify the answer is in a city that is currently a capital, not merely a famous or large city.",
+              "For flag prompts, verify the flag feature actually appears on that flag.",
+              "For border prompts, verify the border relationship is true.",
+              "For person/group prompts, verify the person actually belongs to the requested group or role.",
+              "Examples are positive hints, not an exhaustive answer key and not permission to accept related generic answers.",
+              "Accept synonyms, aliases, translations, or common names only after the factual constraints are fully satisfied.",
+              "If the answer is ambiguous, only partly satisfies the prompt, is merely plausible, or you are not confident, counts must be false.",
+              "When rejecting, use a short factual reason.",
+              "Return only JSON.",
+            ].join(" "),
         },
         {
           role: "user",
@@ -72,6 +108,7 @@ export async function POST(request: Request) {
             prompt,
             guidance,
             answer,
+            examples: acceptedAnswers.slice(0, 40),
           }),
         },
       ],

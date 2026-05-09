@@ -1,0 +1,23 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="songBlob" x1="53" y1="43" x2="207" y2="211" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F9A8D4"/>
+      <stop offset="1" stop-color="#FDBA74"/>
+    </linearGradient>
+    <filter id="songShadow" x="24" y="32" width="208" height="202" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="15" stdDeviation="13" flood-color="#64748B" flood-opacity="0.16"/>
+    </filter>
+  </defs>
+  <g filter="url(#songShadow)">
+    <path d="M53 137C47 84 84 47 130 45C181 43 214 82 211 135C208 186 170 214 117 207C77 202 59 179 53 137Z" fill="url(#songBlob)"/>
+    <path d="M94 107C101 97 114 97 121 107" stroke="#831843" stroke-width="8" stroke-linecap="round"/>
+    <path d="M146 107C153 97 166 97 173 107" stroke="#831843" stroke-width="8" stroke-linecap="round"/>
+    <path d="M111 143C122 158 145 158 157 143" stroke="#831843" stroke-width="10" stroke-linecap="round"/>
+    <path d="M61 66V106" stroke="#A855F7" stroke-width="9" stroke-linecap="round"/>
+    <path d="M61 66H91V83H61" stroke="#A855F7" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="53" cy="110" r="12" fill="#A855F7"/>
+    <path d="M190 60V101" stroke="#F59E0B" stroke-width="9" stroke-linecap="round"/>
+    <path d="M190 60H218V78H190" stroke="#F59E0B" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="181" cy="105" r="12" fill="#F59E0B"/>
+  </g>
+</svg>

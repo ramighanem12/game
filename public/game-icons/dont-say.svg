@@ -1,0 +1,30 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="outguessMain" x1="57" y1="53" x2="190" y2="207" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5EEAD4"/>
+      <stop offset="1" stop-color="#38BDF8"/>
+    </linearGradient>
+    <linearGradient id="outguessHidden" x1="149" y1="54" x2="211" y2="126" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C4B5FD"/>
+      <stop offset="1" stop-color="#F9A8D4"/>
+    </linearGradient>
+    <filter id="outguessShadow" x="31" y="39" width="194" height="180" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="14" stdDeviation="12" flood-color="#64748B" flood-opacity="0.15"/>
+    </filter>
+  </defs>
+  <g filter="url(#outguessShadow)">
+    <circle cx="181" cy="91" r="36" fill="url(#outguessHidden)" opacity="0.88"/>
+    <circle cx="169" cy="91" r="6" fill="#4C1D95"/>
+    <circle cx="193" cy="91" r="6" fill="#4C1D95"/>
+    <path d="M53 135C46 85 82 54 128 54C176 54 207 88 203 137C199 184 164 207 115 202C77 198 59 174 53 135Z" fill="url(#outguessMain)"/>
+    <path d="M89 112C99 102 115 102 125 113" stroke="#164E63" stroke-width="8" stroke-linecap="round"/>
+    <path d="M145 113C156 102 172 102 181 112" stroke="#164E63" stroke-width="8" stroke-linecap="round"/>
+    <circle cx="108" cy="132" r="10" fill="#164E63"/>
+    <circle cx="162" cy="132" r="10" fill="#164E63"/>
+    <circle cx="112" cy="128" r="3.5" fill="white"/>
+    <circle cx="166" cy="128" r="3.5" fill="white"/>
+    <path d="M117 164C130 173 148 173 161 164" stroke="#164E63" stroke-width="8" stroke-linecap="round"/>
+    <path d="M69 75L59 65M57 96H43" stroke="#2DD4BF" stroke-width="8" stroke-linecap="round"/>
+    <path d="M190 176L197 191L212 198L197 204L190 220L184 204L168 198L184 191L190 176Z" fill="#A78BFA"/>
+  </g>
+</svg>

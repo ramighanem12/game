@@ -10,6 +10,7 @@ import {
   gameModes,
   getDontSayQuestions,
   normalizeAnswer,
+  playableGameModes,
   type Category,
   type Difficulty,
   type DontSayQuestion,
@@ -71,10 +72,10 @@ const getQuestionPillLabel = (
   mode: GameMode,
   category: Category,
   questionNumber: number,
-  questionTotal: number,
+  questionTotal: number | null,
 ) =>
   mode === "dont-say"
-    ? `${gameModeMeta[mode].title} (${questionNumber}/${questionTotal})`
+    ? `${gameModeMeta[mode].title} (${questionNumber})`
     : `${categoryMeta[category].label} (${questionNumber}/${questionTotal})`;
 
 const leaderboardNames = [
@@ -100,12 +101,32 @@ const leaderboardNames = [
   "Ezra",
 ];
 
-const leaderboardScopes = ["Global", "US", "Friends"] as const;
+const leaderboardScopes = ["Global", "US", "Local", "Friends"] as const;
 type LeaderboardScope = (typeof leaderboardScopes)[number];
 const leaderboardScopeLabels: Record<LeaderboardScope, string> = {
   Global: "Global",
   US: "🇺🇸 US",
+  Local: "Local",
   Friends: "Friends",
+};
+const leaderboardScopeSlugs: Record<LeaderboardScope, string> = {
+  Global: "",
+  US: "us",
+  Local: "local",
+  Friends: "friends",
+};
+const leaderboardScopeBySlug = Object.fromEntries(
+  Object.entries(leaderboardScopeSlugs).map(([scope, slug]) => [slug, scope]),
+) as Record<string, LeaderboardScope>;
+const getLeaderboardPath = (scope: LeaderboardScope) =>
+  scope === "Global" ? "/leaderboard" : `/leaderboard/${leaderboardScopeSlugs[scope]}`;
+const getLeaderboardScopeFromPath = (pathname: string) => {
+  if (pathname === "/leaderboard") {
+    return "Global";
+  }
+
+  const match = pathname.match(/^\/leaderboard\/([^/]+)$/);
+  return match ? leaderboardScopeBySlug[match[1]] : undefined;
 };
 
 const buildLeaderboard = (scope: LeaderboardScope, scoreOffset: number) =>
@@ -121,6 +142,7 @@ const buildLeaderboard = (scope: LeaderboardScope, scoreOffset: number) =>
 const leaderboards: Record<LeaderboardScope, ReturnType<typeof buildLeaderboard>> = {
   Global: buildLeaderboard("Global", 0),
   US: buildLeaderboard("US", 2),
+  Local: buildLeaderboard("Local", 6),
   Friends: buildLeaderboard("Friends", 4),
 };
 
@@ -141,6 +163,14 @@ const lobbyPlayers: LobbyPlayer[] = [
   { name: "Iris", avatar: "Iris", isHost: false },
 ];
 const DEFAULT_GROUP_NAME = "Friday Trivia Crew";
+
+const createGroupCode = () => {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+  return Array.from({ length: 5 }, () =>
+    alphabet[Math.floor(Math.random() * alphabet.length)],
+  ).join("");
+};
 
 const aboutSteps = [
   {
@@ -219,7 +249,14 @@ const playerAvatars = [
   "Vega",
   "Winter",
 ] as const;
+const gameModeIllustrations: Record<GameMode, string> = {
+  classic: "/game-icons/classic.svg",
+  "dont-say": "/game-icons/dont-say.svg",
+  karaoke: "/game-icons/karaoke.svg",
+  taboo: "/game-icons/taboo.svg",
+};
 const PLAYER_STORAGE_KEY = "trivia-rush-player";
+const QUESTION_HISTORY_STORAGE_KEY = "trivia-rush-question-history";
 
 type PlayerProfile = {
   username: string;
@@ -276,32 +313,7 @@ type RankingQuestion = QuestionBase & {
 
 type Question = TextQuestion | MultiQuestion | NumberQuestion | RankingQuestion;
 
-type RealtimeTokenResponse = {
-  value?: string;
-  client_secret?: {
-    value?: string;
-  };
-};
-
-type RealtimeServerEvent = {
-  type?: string;
-  item_id?: string;
-  transcript?: string;
-  delta?: string;
-  error?: {
-    message?: string;
-  };
-};
-
 type VoiceStatus = "idle" | "connecting" | "listening" | "error";
-
-type ScriptProcessorAudioContext = AudioContext & {
-  createScriptProcessor(
-    bufferSize?: number,
-    numberOfInputChannels?: number,
-    numberOfOutputChannels?: number,
-  ): ScriptProcessorNode;
-};
 
 type ClassicValidation = {
   counts: boolean;
@@ -318,55 +330,32 @@ const TIME_BONUS_PER_SECOND = 5;
 const WRONG_ANSWER_PENALTY = 25;
 const VOICE_SUBMIT_DELAY_MS = 40;
 const ROUND_QUESTION_COUNT = 15;
-const VOICE_RMS_THRESHOLD = 0.025;
-const VOICE_MIN_SPEECH_MS = 180;
-const VOICE_SILENCE_COMMIT_MS = 560;
-const VOICE_MIN_COMMIT_GAP_MS = 900;
-const VOICE_TARGET_SAMPLE_RATE = 24000;
-const REALTIME_TRANSCRIPTION_SESSION = {
-  type: "transcription",
-  audio: {
-    input: {
-      format: {
-        type: "audio/pcm",
-        rate: 24000,
-      },
-      transcription: {
-        model: "gpt-realtime-whisper",
-        language: "en",
-      },
-    },
-  },
-} as const;
+const COMPLETION_RETURN_SECONDS = 10;
+const WHISPER_RMS_THRESHOLD = 0.022;
+const WHISPER_MIN_SPEECH_MS = 220;
+const WHISPER_SILENCE_COMMIT_MS = 520;
+const WHISPER_MIN_COMMIT_GAP_MS = 800;
 
-const encodePcm16Base64 = (samples: Float32Array, inputSampleRate: number) => {
-  const ratio = inputSampleRate / VOICE_TARGET_SAMPLE_RATE;
-  const outputLength = Math.max(1, Math.floor(samples.length / ratio));
-  const pcm = new Int16Array(outputLength);
-
-  for (let index = 0; index < outputLength; index += 1) {
-    const sourceIndex = Math.min(samples.length - 1, Math.floor(index * ratio));
-    const sample = Math.max(-1, Math.min(1, samples[sourceIndex] ?? 0));
-    pcm[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
-  }
-
-  const bytes = new Uint8Array(pcm.buffer);
-  let binary = "";
-  const chunkSize = 0x8000;
-
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
-  }
-
-  return window.btoa(binary);
+type WhisperVoiceTurn = {
+  isSpeaking: boolean;
+  speechStartedAt: number;
+  silenceStartedAt: number;
+  lastCommitAt: number;
 };
 
-const getAudioRms = (samples: Float32Array) => {
+type WhisperTranscriptionResponse = {
+  transcript?: string;
+  error?: string;
+};
+
+const getAudioByteRms = (samples: Uint8Array) => {
   let sumSquares = 0;
 
   for (let index = 0; index < samples.length; index += 1) {
-    const sample = samples[index] ?? 0;
-    sumSquares += sample * sample;
+    const centeredSample = (samples[index] ?? 128) - 128;
+    const normalizedSample = centeredSample / 128;
+
+    sumSquares += normalizedSample * normalizedSample;
   }
 
   return Math.sqrt(sumSquares / samples.length);
@@ -1197,6 +1186,10 @@ const cleanVoiceAnswer = (value: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
+const voiceHomophones: Record<string, string[]> = {
+  cyprus: ["cypress"],
+};
+
 const ignoredVoiceAnswers = new Set([
   "a",
   "an",
@@ -1239,6 +1232,44 @@ const getAnswerIdentity = (value: string) => {
   const normalizedValue = normalize(value);
 
   return countryFlags[normalizedValue]?.code ?? normalizedValue;
+};
+
+const areSameDontSayAnswer = (firstValue: string, secondValue: string) => {
+  const first = normalize(firstValue);
+  const second = normalize(secondValue);
+
+  if (!first || !second) {
+    return false;
+  }
+
+  if (first === second || getAnswerIdentity(first) === getAnswerIdentity(second)) {
+    return true;
+  }
+
+  const firstAliases = new Set(getAnswerAliases(first).map(normalize));
+  const secondAliases = new Set(getAnswerAliases(second).map(normalize));
+
+  if (
+    firstAliases.has(second) ||
+    secondAliases.has(first) ||
+    Array.from(firstAliases).some((alias) => secondAliases.has(alias))
+  ) {
+    return true;
+  }
+
+  const firstWords = first.split(" ").filter(Boolean);
+  const secondWords = second.split(" ").filter(Boolean);
+  const isLastNameMatch =
+    (firstWords.length === 1 &&
+      first.length >= 4 &&
+      secondWords.length > 1 &&
+      first === secondWords[secondWords.length - 1]) ||
+    (secondWords.length === 1 &&
+      second.length >= 4 &&
+      firstWords.length > 1 &&
+      second === firstWords[firstWords.length - 1]);
+
+  return isLastNameMatch;
 };
 
 const formatAnswerLabel = (value: string) => {
@@ -1300,6 +1331,98 @@ const isCloseTextAnswer = (guess: string, answers: string[]) => {
         answerWords.some((word) => word.startsWith(guess)))
     );
   });
+};
+
+const getEditDistance = (firstValue: string, secondValue: string) => {
+  const first = normalize(firstValue);
+  const second = normalize(secondValue);
+  const previous = Array.from({ length: second.length + 1 }, (_, index) => index);
+
+  for (let firstIndex = 1; firstIndex <= first.length; firstIndex += 1) {
+    const current = [firstIndex];
+
+    for (let secondIndex = 1; secondIndex <= second.length; secondIndex += 1) {
+      const substitutionCost =
+        first[firstIndex - 1] === second[secondIndex - 1] ? 0 : 1;
+
+      current[secondIndex] = Math.min(
+        current[secondIndex - 1] + 1,
+        previous[secondIndex] + 1,
+        previous[secondIndex - 1] + substitutionCost,
+      );
+    }
+
+    previous.splice(0, previous.length, ...current);
+  }
+
+  return previous[second.length] ?? 0;
+};
+
+const getVoiceNgrams = (words: string[], size: number) =>
+  Array.from({ length: Math.max(0, words.length - size + 1) }, (_, index) => ({
+    value: words.slice(index, index + size).join(" "),
+    wordIndex: index,
+  }));
+
+const isLikelyVoiceMatch = (heardValue: string, acceptedAlias: string) => {
+  const heard = normalize(heardValue);
+  const alias = normalize(acceptedAlias);
+
+  if (!heard || !alias) {
+    return false;
+  }
+
+  if (heard === alias) {
+    return true;
+  }
+
+  if (alias.length <= 2 || heard.length <= 1) {
+    return false;
+  }
+
+  const distance = getEditDistance(heard, alias);
+  const maxLength = Math.max(heard.length, alias.length);
+
+  if (maxLength <= 4) {
+    return distance <= 1;
+  }
+
+  if (maxLength <= 8) {
+    return distance <= 2;
+  }
+
+  return distance <= 2 && distance / maxLength <= 0.22;
+};
+
+const getVoiceAliasMatchPosition = (normalizedInput: string, normalizedAlias: string) => {
+  if (!normalizedAlias) {
+    return -1;
+  }
+
+  const exactPosition = normalizedInput.search(
+    new RegExp(`(?:^|\\s)${normalizedAlias.replace(/\s+/g, "\\s+")}(?:\\s|$)`),
+  );
+
+  if (exactPosition >= 0) {
+    return exactPosition;
+  }
+
+  const words = normalizedInput.split(" ").filter(Boolean);
+  const aliasWords = normalizedAlias.split(" ").filter(Boolean);
+  const candidateSizes = Array.from(
+    new Set([aliasWords.length - 1, aliasWords.length, aliasWords.length + 1]),
+  ).filter((size) => size > 0);
+
+  for (const size of candidateSizes) {
+    for (const candidate of getVoiceNgrams(words, size)) {
+      if (isLikelyVoiceMatch(candidate.value, normalizedAlias)) {
+        return words.slice(0, candidate.wordIndex).join(" ").length +
+          (candidate.wordIndex > 0 ? 1 : 0);
+      }
+    }
+  }
+
+  return -1;
 };
 
 const numberWords: Record<string, number> = {
@@ -2520,6 +2643,7 @@ const getAnswerAliases = (answer: string) => {
   }
 
   extraAnswerAliases[normalizedAnswer]?.forEach((alias) => aliases.add(alias));
+  voiceHomophones[normalizedAnswer]?.forEach((alias) => aliases.add(alias));
 
   return Array.from(aliases);
 };
@@ -3361,9 +3485,7 @@ const extractRankingAnswersFromInput = (
       .filter(Boolean)
       .map((alias) => ({
         answer,
-        position: normalizedInput.search(
-          new RegExp(`(?:^|\\s)${alias.replace(/\s+/g, "\\s+")}(?:\\s|$)`),
-        ),
+        position: getVoiceAliasMatchPosition(normalizedInput, alias),
       }))
       .filter((match) => match.position >= 0),
   );
@@ -3404,9 +3526,7 @@ const extractMultiAnswersFromVoiceInput = (
       .map((alias) => ({
         answer,
         alias,
-        position: normalizedInput.search(
-          new RegExp(`(?:^|\\s)${alias.replace(/\s+/g, "\\s+")}(?:\\s|$)`),
-        ),
+        position: getVoiceAliasMatchPosition(normalizedInput, alias),
       }))
       .filter((match) => match.position >= 0),
   );
@@ -3647,7 +3767,7 @@ const getModeQuestions = (
   category: Category,
   difficulty: Difficulty,
 ) => {
-  if (mode === "classic") {
+  if (mode === "classic" || mode === "karaoke") {
     return getCategoryQuestions(category, difficulty);
   }
 
@@ -3673,13 +3793,39 @@ const shuffleQuestionIndices = (indices: number[]) => {
   return shuffledIndices;
 };
 
-const getRandomQuestionQueue = (questions: Question[]) =>
-  shuffleQuestionIndices(questions.map((_, index) => index)).slice(
-    0,
-    Math.min(ROUND_QUESTION_COUNT, questions.length),
-  );
+const getRandomQuestionQueue = (questions: Question[], avoidedIndices = new Set<number>()) => {
+  const targetCount = Math.min(ROUND_QUESTION_COUNT, questions.length);
+  const freshIndices = questions
+    .map((_, index) => index)
+    .filter((index) => !avoidedIndices.has(index));
+  const fallbackIndices = questions
+    .map((_, index) => index)
+    .filter((index) => avoidedIndices.has(index));
 
-const getBalancedQuestionQueue = (questions: Question[]) => {
+  return [
+    ...shuffleQuestionIndices(freshIndices),
+    ...shuffleQuestionIndices(fallbackIndices),
+  ].slice(0, targetCount);
+};
+
+const getSurvivorQuestionQueue = (questions: Question[], previousIndex?: number) => {
+  const shuffledQueue = shuffleQuestionIndices(questions.map((_, index) => index));
+
+  if (
+    previousIndex === undefined ||
+    shuffledQueue.length <= 1 ||
+    shuffledQueue[0] !== previousIndex
+  ) {
+    return shuffledQueue;
+  }
+
+  return [...shuffledQueue.slice(1), shuffledQueue[0]];
+};
+
+const getBalancedQuestionQueue = (
+  questions: Question[],
+  avoidedIndices = new Set<number>(),
+) => {
   const buckets = new Map<string, number[]>();
   const selectedCategories = new Map<QuestionCategory, number>();
   const selectedQuestionIndices = new Set<number>();
@@ -3723,9 +3869,12 @@ const getBalancedQuestionQueue = (questions: Question[]) => {
   const balancedQueue: number[] = [];
 
   for (const bucket of shuffledBuckets) {
-    const firstQuestionIndex = shuffleQuestionIndices(bucket).find((questionIndex) =>
-      canAddQuestion(questionIndex),
-    );
+    const preferredBucket = bucket.filter((questionIndex) => !avoidedIndices.has(questionIndex));
+    const fallbackBucket = bucket.filter((questionIndex) => avoidedIndices.has(questionIndex));
+    const firstQuestionIndex = [
+      ...shuffleQuestionIndices(preferredBucket),
+      ...shuffleQuestionIndices(fallbackBucket),
+    ].find((questionIndex) => canAddQuestion(questionIndex));
 
     if (firstQuestionIndex !== undefined) {
       addQuestion(firstQuestionIndex);
@@ -3740,8 +3889,18 @@ const getBalancedQuestionQueue = (questions: Question[]) => {
   const remainingIndices = questions
     .map((_, index) => index)
     .filter((index) => !selectedQuestionIndices.has(index));
+  const preferredRemainingIndices = remainingIndices.filter(
+    (index) => !avoidedIndices.has(index),
+  );
+  const fallbackRemainingIndices = remainingIndices.filter((index) =>
+    avoidedIndices.has(index),
+  );
+  const orderedRemainingIndices = [
+    ...shuffleQuestionIndices(preferredRemainingIndices),
+    ...shuffleQuestionIndices(fallbackRemainingIndices),
+  ];
 
-  for (const questionIndex of shuffleQuestionIndices(remainingIndices)) {
+  for (const questionIndex of orderedRemainingIndices) {
     if (!canAddQuestion(questionIndex)) {
       continue;
     }
@@ -3754,7 +3913,7 @@ const getBalancedQuestionQueue = (questions: Question[]) => {
     }
   }
 
-  for (const questionIndex of shuffleQuestionIndices(remainingIndices)) {
+  for (const questionIndex of orderedRemainingIndices) {
     if (!canAddQuestion(questionIndex, 3)) {
       continue;
     }
@@ -3767,7 +3926,7 @@ const getBalancedQuestionQueue = (questions: Question[]) => {
     }
   }
 
-  for (const questionIndex of shuffleQuestionIndices(remainingIndices)) {
+  for (const questionIndex of orderedRemainingIndices) {
     if (selectedQuestionIndices.has(questionIndex)) {
       continue;
     }
@@ -3787,14 +3946,63 @@ const getRoundQuestionQueue = (
   questions: Question[],
   category: Category,
   mode: GameMode,
-) =>
-  mode === "classic" && category === "General"
-    ? getBalancedQuestionQueue(questions)
-    : getRandomQuestionQueue(questions);
+  previousIndex?: number,
+  avoidedIndices = new Set<number>(),
+) => {
+  if (mode === "dont-say") {
+    return getSurvivorQuestionQueue(questions, previousIndex);
+  }
+
+  return mode === "classic" && category === "General"
+    ? getBalancedQuestionQueue(questions, avoidedIndices)
+    : getRandomQuestionQueue(questions, avoidedIndices);
+};
+
+const getQuestionHistoryKey = (
+  mode: GameMode,
+  category: Category,
+  difficulty: Difficulty,
+) => `${mode}:${category}:${difficulty}`;
+
+const readQuestionHistory = () => {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  try {
+    return JSON.parse(
+      window.localStorage.getItem(QUESTION_HISTORY_STORAGE_KEY) ?? "{}",
+    ) as Record<string, string[]>;
+  } catch {
+    window.localStorage.removeItem(QUESTION_HISTORY_STORAGE_KEY);
+    return {};
+  }
+};
+
+const writeQuestionHistory = (history: Record<string, string[]>) => {
+  window.localStorage.setItem(QUESTION_HISTORY_STORAGE_KEY, JSON.stringify(history));
+};
 
 const fallbackQuestion = getCategoryQuestions("General", "medium")[0] ?? seedQuestions[0];
 
-export default function Home() {
+type HomeView = "play" | "leaderboard" | "about" | "settings" | "games" | "lobby";
+
+const homeViewPaths: Record<HomeView, string> = {
+  play: "/",
+  leaderboard: "/leaderboard",
+  about: "/about",
+  settings: "/settings",
+  games: "/games",
+  lobby: "/",
+};
+
+export default function Home({
+  initialHomeView = "play",
+  initialLeaderboardScope = "Global",
+}: {
+  initialHomeView?: HomeView;
+  initialLeaderboardScope?: LeaderboardScope;
+}) {
   const [questionQueue, setQuestionQueue] = useState(() =>
     getBalancedQuestionQueue(getCategoryQuestions("General", "medium")),
   );
@@ -3816,13 +4024,14 @@ export default function Home() {
   const [lastWrongAnswer, setLastWrongAnswer] = useState("");
   const [nextCountdown, setNextCountdown] = useState<number | null>(null);
   const [startCountdown, setStartCountdown] = useState<number | null>(null);
-  const [homeView, setHomeView] = useState<
-    "play" | "leaderboard" | "about" | "settings" | "lobby"
-  >("play");
+  const [completionCountdown, setCompletionCountdown] = useState(
+    COMPLETION_RETURN_SECONDS,
+  );
+  const [homeView, setHomeView] = useState<HomeView>(initialHomeView);
   const [categoryMenuOpen, setCategoryMenuOpen] = useState(false);
   const [otherMenuOpen, setOtherMenuOpen] = useState(false);
   const [leaderboardScope, setLeaderboardScope] =
-    useState<LeaderboardScope>("Global");
+    useState<LeaderboardScope>(initialLeaderboardScope);
   const [playerProfile, setPlayerProfile] =
     useState<PlayerProfile>(defaultPlayerProfile);
   const [leaderboardScroll, setLeaderboardScroll] = useState({
@@ -3831,16 +4040,23 @@ export default function Home() {
   });
   const [lobbyPlayersScroll, setLobbyPlayersScroll] = useState({
     canScrollUp: false,
-    canScrollDown: true,
+    canScrollDown: false,
   });
   const [joinCode, setJoinCode] = useState("");
   const [joinError, setJoinError] = useState("");
   const [isJoining, setIsJoining] = useState(false);
   const [joinModalOpen, setJoinModalOpen] = useState(false);
+  const [activeGameDetails, setActiveGameDetails] = useState<GameMode | null>(null);
+  const [requestGameModalOpen, setRequestGameModalOpen] = useState(false);
+  const [gameRequest, setGameRequest] = useState("");
   const [activeGroupCode, setActiveGroupCode] = useState("");
+  const [isLobbyHost, setIsLobbyHost] = useState(false);
   const [groupName, setGroupName] = useState(DEFAULT_GROUP_NAME);
   const [draftGroupName, setDraftGroupName] = useState(DEFAULT_GROUP_NAME);
   const [groupNameModalOpen, setGroupNameModalOpen] = useState(false);
+  const [groupNameModalMode, setGroupNameModalMode] = useState<"start" | "edit">(
+    "edit",
+  );
   const [simulatedLobbyPlayers, setSimulatedLobbyPlayers] = useState<LobbyPlayer[]>([]);
   const [dummyJoinModalOpen, setDummyJoinModalOpen] = useState(false);
   const [dummyPlayerName, setDummyPlayerName] = useState("");
@@ -3868,12 +4084,15 @@ export default function Home() {
   >("ready");
   const [message, setMessage] = useState("");
   const [scoreDelta, setScoreDelta] = useState(0);
+  const [questionsAnswered, setQuestionsAnswered] = useState(0);
   const [wrongAttemptCount, setWrongAttemptCount] = useState(0);
   const [dontSaySecret, setDontSaySecret] = useState<DontSaySecret | null>(null);
   const [dontSayValidationPending, setDontSayValidationPending] = useState(false);
   const [dontSayLastAnswer, setDontSayLastAnswer] = useState("");
   const [dontSayEliminated, setDontSayEliminated] = useState(false);
   const [gameLeaderboardOpen, setGameLeaderboardOpen] = useState(false);
+  const [gameOptionsOpen, setGameOptionsOpen] = useState(false);
+  const [endGameConfirmOpen, setEndGameConfirmOpen] = useState(false);
   const [gameLeaderboardScroll, setGameLeaderboardScroll] = useState({
     canScrollUp: false,
     canScrollDown: false,
@@ -3885,24 +4104,28 @@ export default function Home() {
   const categoryMenuRef = useRef<HTMLDivElement>(null);
   const otherMenuRef = useRef<HTMLDivElement>(null);
   const gameLeaderboardRef = useRef<HTMLDivElement>(null);
+  const gameOptionsRef = useRef<HTMLDivElement>(null);
+  const lobbyPlayersRef = useRef<HTMLDivElement>(null);
   const gradeAnswerRef = useRef<(answer: string) => void | Promise<void>>(() => {});
-  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
-  const dataChannelRef = useRef<RTCDataChannel | null>(null);
-  const realtimeSocketRef = useRef<WebSocket | null>(null);
-  const localStreamRef = useRef<MediaStream | null>(null);
+  const voiceMediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const voiceLocalStreamRef = useRef<MediaStream | null>(null);
   const voiceAudioContextRef = useRef<AudioContext | null>(null);
   const voiceAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const voiceAudioProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const voiceAnalyserRef = useRef<AnalyserNode | null>(null);
   const voiceAnalyserFrameRef = useRef<number | null>(null);
-  const voiceTranscriptByItemRef = useRef<Record<string, string>>({});
-  const voiceQuestionVersionByItemRef = useRef<Record<string, number>>({});
-  const voiceStartedAtByItemRef = useRef<Record<string, number>>({});
-  const manualVoiceTurnRef = useRef({
+  const voiceRecordingChunksRef = useRef<Blob[]>([]);
+  const voiceTurnRef = useRef<WhisperVoiceTurn>({
     isSpeaking: false,
     speechStartedAt: 0,
     silenceStartedAt: 0,
     lastCommitAt: 0,
-    hasBufferedAudio: false,
+  });
+  const instantVoiceAnswerIdsRef = useRef<Set<string>>(new Set());
+  const instantVoiceTimeoutsRef = useRef<number[]>([]);
+  const splitVoiceTranscriptRef = useRef({
+    normalizedTranscript: "",
+    questionVersion: -1,
+    expiresAt: 0,
   });
   const voiceQuestionVersionRef = useRef(0);
   const dontSaySecretRequestRef = useRef(0);
@@ -3911,6 +4134,8 @@ export default function Home() {
   const autoSubmitRef = useRef<number | null>(null);
   const roundSavedRef = useRef(false);
   const statusRef = useRef(status);
+  const voiceModeEnabledRef = useRef(voiceModeEnabled);
+  const voiceStopRequestedRef = useRef(false);
   const currentQuestionRef = useRef<Question>(fallbackQuestion);
   const acceptedAnswersRef = useRef<string[]>([]);
 
@@ -3931,14 +4156,42 @@ export default function Home() {
     () => getModeQuestions(selectedGameMode, selectedCategory, selectedDifficulty),
     [selectedCategory, selectedDifficulty, selectedGameMode],
   );
-  const activeLeaderboard = leaderboards[leaderboardScope];
+  const activeLeaderboard = useMemo(() => {
+    const localPlayerEntry =
+      playerProfile.username.trim() && playerProfile.totalScore > 0
+        ? {
+            name: playerProfile.username.trim(),
+            score: playerProfile.totalScore,
+            avatar: getAvatarUrl(playerProfile.avatar),
+            isLocalPlayer: true,
+          }
+        : null;
+    const baseLeaderboard = leaderboards[leaderboardScope].map((entry) => ({
+      ...entry,
+      isLocalPlayer: false,
+    }));
+
+    if (!localPlayerEntry) {
+      return baseLeaderboard;
+    }
+
+    if (leaderboardScope === "Local") {
+      return [localPlayerEntry];
+    }
+
+    return [localPlayerEntry, ...baseLeaderboard]
+      .sort((first, second) => second.score - first.score)
+      .slice(0, 100);
+  }, [leaderboardScope, playerProfile]);
   const usernameReady = playerProfile.username.trim().length > 0;
   const groupInviteLink =
     typeof window === "undefined" || !activeGroupCode
       ? ""
       : `${window.location.origin}?join=${activeGroupCode}`;
   const activeLobbyPlayers = useMemo(() => {
-    const mockPlayerSlots = Math.max(0, 7 - simulatedLobbyPlayers.length);
+    const mockPlayerSlots = isLobbyHost
+      ? 0
+      : Math.max(0, 7 - simulatedLobbyPlayers.length);
     const otherPlayers = [
       ...lobbyPlayers.slice(0, mockPlayerSlots),
       ...simulatedLobbyPlayers,
@@ -3946,7 +4199,7 @@ export default function Home() {
     const currentPlayer: LobbyPlayer = {
       name: playerProfile.username.trim() || "You",
       avatar: playerProfile.avatar,
-      isHost: false,
+      isHost: isLobbyHost,
       isCurrent: true,
     };
 
@@ -3960,8 +4213,9 @@ export default function Home() {
     return hostPlayer
       ? [hostPlayer, currentPlayer, ...nonHostPlayers]
       : [currentPlayer, ...otherPlayers];
-  }, [playerProfile.avatar, playerProfile.username, simulatedLobbyPlayers]);
+  }, [isLobbyHost, playerProfile.avatar, playerProfile.username, simulatedLobbyPlayers]);
   const visibleLobbyPlayers = activeLobbyPlayers.slice(0, 8);
+  const lobbyCanOverflow = visibleLobbyPlayers.length > 4;
   const canStartGroupGame = activeLobbyPlayers.length >= 2;
   const gameLeaderboard = useMemo(
     () =>
@@ -3982,11 +4236,15 @@ export default function Home() {
       ? activeDontSayQuestions[currentIndex] ?? activeDontSayQuestions[0]
       : null;
   const isDontSayMode = selectedGameMode === "dont-say";
-  const roundQuestionTotal = Math.min(ROUND_QUESTION_COUNT, activeQuestions.length);
-  const roundQuestionNumber = Math.max(
-    1,
-    roundQuestionTotal - questionQueue.length + 1,
+  const canPlaySelectedGameMode = (playableGameModes as readonly GameMode[]).includes(
+    selectedGameMode,
   );
+  const roundQuestionTotal = isDontSayMode
+    ? null
+    : Math.min(ROUND_QUESTION_COUNT, activeQuestions.length);
+  const roundQuestionNumber = isDontSayMode
+    ? questionsAnswered + 1
+    : Math.max(1, (roundQuestionTotal ?? 1) - questionQueue.length + 1);
   const acceptedAnswers = useMemo(
     () => acceptedAnswersByQuestion[currentIndex] ?? [],
     [acceptedAnswersByQuestion, currentIndex],
@@ -4038,6 +4296,10 @@ export default function Home() {
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
+
+  useEffect(() => {
+    voiceModeEnabledRef.current = voiceModeEnabled;
+  }, [voiceModeEnabled]);
 
   useEffect(() => {
     currentQuestionRef.current = currentQuestion;
@@ -4099,10 +4361,99 @@ export default function Home() {
     window.localStorage.setItem(PLAYER_STORAGE_KEY, JSON.stringify(nextProfile));
   }, []);
 
+  const getFreshRoundQuestionQueue = useCallback(
+    (questions: Question[], category: Category, mode: GameMode) => {
+      const historyKey = getQuestionHistoryKey(mode, category, selectedDifficulty);
+      const history = readQuestionHistory();
+      const previousPrompts = new Set(history[historyKey] ?? []);
+      const freshQuestionCount = questions.filter(
+        (question) => !previousPrompts.has(question.prompt),
+      ).length;
+      const shouldResetHistory =
+        mode !== "dont-say" && freshQuestionCount < Math.min(ROUND_QUESTION_COUNT, questions.length);
+      const avoidedPrompts = shouldResetHistory ? new Set<string>() : previousPrompts;
+      const avoidedIndices = new Set(
+        questions
+          .map((question, index) => (avoidedPrompts.has(question.prompt) ? index : -1))
+          .filter((index) => index >= 0),
+      );
+      const nextQueue = getRoundQuestionQueue(
+        questions,
+        category,
+        mode,
+        undefined,
+        avoidedIndices,
+      );
+      const nextPrompts = nextQueue
+        .map((questionIndex) => questions[questionIndex]?.prompt)
+        .filter((prompt): prompt is string => Boolean(prompt));
+
+      history[historyKey] = Array.from(new Set([...avoidedPrompts, ...nextPrompts]));
+      writeQuestionHistory(history);
+
+      return nextQueue;
+    },
+    [selectedDifficulty],
+  );
+
+  const saveRoundScore = useCallback(() => {
+    if (roundSavedRef.current || !playerProfile.username.trim()) {
+      return;
+    }
+
+    roundSavedRef.current = true;
+    updatePlayerProfile({
+      ...playerProfile,
+      totalScore: playerProfile.totalScore + score,
+    });
+  }, [playerProfile, score, updatePlayerProfile]);
+
+  useEffect(() => {
+    const syncPathFromView = () => {
+      const nextPath =
+        homeView === "leaderboard"
+          ? getLeaderboardPath(leaderboardScope)
+          : homeViewPaths[homeView] ?? "/";
+
+      if (window.location.pathname !== nextPath) {
+        window.history.pushState({ homeView, leaderboardScope }, "", nextPath);
+      }
+    };
+
+    syncPathFromView();
+  }, [homeView, leaderboardScope]);
+
+  useEffect(() => {
+    const syncViewFromPath = () => {
+      const nextLeaderboardScope = getLeaderboardScopeFromPath(window.location.pathname);
+
+      if (nextLeaderboardScope) {
+        setHomeView("leaderboard");
+        setLeaderboardScope(nextLeaderboardScope);
+        return;
+      }
+
+      const nextView =
+        (Object.entries(homeViewPaths).find(
+          ([view, path]) => view !== "lobby" && path === window.location.pathname,
+        )?.[0] as HomeView | undefined) ?? "play";
+
+      setHomeView(nextView);
+    };
+
+    window.addEventListener("popstate", syncViewFromPath);
+    return () => window.removeEventListener("popstate", syncViewFromPath);
+  }, []);
+
   const cycleGameMode = useCallback(() => {
     setSelectedGameMode((currentMode) => {
       const currentModeIndex = gameModes.indexOf(currentMode);
       const nextMode = gameModes[(currentModeIndex + 1) % gameModes.length];
+
+      if (!(playableGameModes as readonly GameMode[]).includes(nextMode)) {
+        return nextMode;
+      }
+
       const nextQuestions = getModeQuestions(
         nextMode,
         selectedCategory,
@@ -4111,6 +4462,7 @@ export default function Home() {
 
       setQuestionQueue(getRoundQuestionQueue(nextQuestions, selectedCategory, nextMode));
       setAcceptedAnswersByQuestion({});
+      setQuestionsAnswered(0);
 
       return nextMode;
     });
@@ -4129,6 +4481,7 @@ export default function Home() {
 
       setQuestionQueue(getRoundQuestionQueue(nextQuestions, nextCategory, selectedGameMode));
       setAcceptedAnswersByQuestion({});
+      setQuestionsAnswered(0);
 
       return nextCategory;
     });
@@ -4149,6 +4502,7 @@ export default function Home() {
         getRoundQuestionQueue(nextQuestions, selectedCategory, selectedGameMode),
       );
       setAcceptedAnswersByQuestion({});
+      setQuestionsAnswered(0);
 
       return nextDifficulty;
     });
@@ -4219,6 +4573,55 @@ export default function Home() {
     };
   }, [gameLeaderboardOpen]);
 
+  useEffect(() => {
+    if (!gameOptionsOpen) {
+      return;
+    }
+
+    const closeGameOptions = (event: MouseEvent) => {
+      const target = event.target as Node;
+
+      if (gameOptionsRef.current?.contains(target)) {
+        return;
+      }
+
+      setGameOptionsOpen(false);
+    };
+
+    const closeGameOptionsWithEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setGameOptionsOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", closeGameOptions);
+    document.addEventListener("keydown", closeGameOptionsWithEscape);
+
+    return () => {
+      document.removeEventListener("mousedown", closeGameOptions);
+      document.removeEventListener("keydown", closeGameOptionsWithEscape);
+    };
+  }, [gameOptionsOpen]);
+
+  useEffect(() => {
+    if (homeView !== "lobby") {
+      return;
+    }
+
+    const element = lobbyPlayersRef.current;
+
+    if (!element) {
+      return;
+    }
+
+    setLobbyPlayersScroll({
+      canScrollUp: lobbyCanOverflow && element.scrollTop > 2,
+      canScrollDown:
+        lobbyCanOverflow &&
+        element.scrollTop + element.clientHeight < element.scrollHeight - 2,
+    });
+  }, [homeView, lobbyCanOverflow, visibleLobbyPlayers.length]);
+
   const uploadPlayerAvatar = useCallback(
     (file: File | undefined) => {
       if (!file || !file.type.startsWith("image/")) {
@@ -4260,6 +4663,8 @@ export default function Home() {
         setJoinError("");
         setJoinModalOpen(false);
         setActiveGroupCode(code);
+        setIsLobbyHost(false);
+        setGroupName(DEFAULT_GROUP_NAME);
         setJoinCode("");
         setHomeView("lobby");
         return;
@@ -4296,14 +4701,44 @@ export default function Home() {
     }
   }, [groupInviteLink]);
 
+  const openStartGroupModal = useCallback(() => {
+    if (!usernameReady || !canPlaySelectedGameMode) {
+      return;
+    }
+
+    setDraftGroupName(
+      groupName.trim() && groupName !== DEFAULT_GROUP_NAME
+        ? groupName
+        : `${playerProfile.username.trim() || "My"}'s game`,
+    );
+    setGroupNameModalMode("start");
+    setGroupNameModalOpen(true);
+  }, [canPlaySelectedGameMode, groupName, playerProfile.username, usernameReady]);
+
+  const openEditGroupNameModal = useCallback(() => {
+    setDraftGroupName(groupName);
+    setGroupNameModalMode("edit");
+    setGroupNameModalOpen(true);
+  }, [groupName]);
+
   const saveGroupName = useCallback(() => {
     if (!draftGroupName.trim()) {
       return;
     }
 
-    setGroupName(draftGroupName.trim());
+    const nextGroupName = draftGroupName.trim();
+
+    setGroupName(nextGroupName);
     setGroupNameModalOpen(false);
-  }, [draftGroupName]);
+
+    if (groupNameModalMode === "start") {
+      setActiveGroupCode(createGroupCode());
+      setIsLobbyHost(true);
+      setSimulatedLobbyPlayers([]);
+      setInviteCopied(false);
+      setHomeView("lobby");
+    }
+  }, [draftGroupName, groupNameModalMode]);
 
   const addSimulatedLobbyPlayer = useCallback(() => {
     const name = dummyPlayerName.trim();
@@ -4348,8 +4783,14 @@ export default function Home() {
 
   const invalidateVoiceQuestion = useCallback(() => {
     voiceQuestionVersionRef.current += 1;
-    voiceTranscriptByItemRef.current = {};
-    voiceQuestionVersionByItemRef.current = {};
+    instantVoiceAnswerIdsRef.current = new Set();
+    instantVoiceTimeoutsRef.current.forEach((timeout) => window.clearTimeout(timeout));
+    instantVoiceTimeoutsRef.current = [];
+    splitVoiceTranscriptRef.current = {
+      normalizedTranscript: "",
+      questionVersion: voiceQuestionVersionRef.current,
+      expiresAt: 0,
+    };
 
     if (voiceTypingIntervalRef.current) {
       window.clearInterval(voiceTypingIntervalRef.current);
@@ -4433,34 +4874,60 @@ export default function Home() {
 
   const completeCurrentQuestion = useCallback(() => {
     if (questionQueue.length <= 1) {
-      if (!roundSavedRef.current && playerProfile.username.trim()) {
-        roundSavedRef.current = true;
-        updatePlayerProfile({
-          ...playerProfile,
-          totalScore: playerProfile.totalScore + score,
-        });
+      if (isDontSayMode) {
+        const nextQueue = getRoundQuestionQueue(
+          activeQuestions,
+          selectedCategory,
+          selectedGameMode,
+          currentIndex,
+        );
+        const nextQuestionIndex = nextQueue[0];
+
+        setQuestionsAnswered((count) => count + 1);
+        setQuestionQueue(nextQueue);
+        resetQuestionState(activeQuestions[nextQuestionIndex] ?? currentQuestion);
+        return;
       }
 
+      saveRoundScore();
       setQuestionQueue([]);
+      setCompletionCountdown(COMPLETION_RETURN_SECONDS);
       setStatus("done");
       return;
     }
 
     const nextQuestionIndex = questionQueue[1];
+    setQuestionsAnswered((count) => count + 1);
     setQuestionQueue((queue) => queue.slice(1));
     resetQuestionState(activeQuestions[nextQuestionIndex] ?? currentQuestion);
   }, [
     activeQuestions,
     currentQuestion,
-    playerProfile,
+    currentIndex,
+    isDontSayMode,
     questionQueue,
     resetQuestionState,
-    score,
-    updatePlayerProfile,
+    saveRoundScore,
+    selectedCategory,
+    selectedGameMode,
   ]);
 
   const skipQuestion = () => {
-    if (status !== "playing" || questionQueue.length <= 1) {
+    if (status !== "playing" || (!isDontSayMode && questionQueue.length <= 1)) {
+      return;
+    }
+
+    if (isDontSayMode && questionQueue.length <= 1) {
+      const nextQueue = getRoundQuestionQueue(
+        activeQuestions,
+        selectedCategory,
+        selectedGameMode,
+        currentIndex,
+      );
+      const nextQuestionIndex = nextQueue[0];
+
+      setQuestionQueue(nextQueue);
+      resetQuestionState(activeQuestions[nextQuestionIndex] ?? currentQuestion);
       return;
     }
 
@@ -4505,8 +4972,22 @@ export default function Home() {
         if (remaining <= 1) {
           window.clearInterval(timer);
           invalidateVoiceQuestion();
-          setStatus("timeout");
-          setMessage(timeoutMessage);
+          if (isDontSayMode) {
+            setScoreDelta(-WRONG_ANSWER_PENALTY);
+            setScore((total) => Math.max(0, total - WRONG_ANSWER_PENALTY));
+            setStatus("wrong");
+            setDontSayEliminated(true);
+            setLastWrongAnswer("No answer");
+            setWrongAttemptCount((count) => count + 1);
+            setMessage(
+              dontSaySecret
+                ? `Eliminated. AI had ${dontSaySecret.answer}`
+                : "Eliminated. No answer",
+            );
+          } else {
+            setStatus("timeout");
+            setMessage(timeoutMessage);
+          }
           return 0;
         }
 
@@ -4517,7 +4998,9 @@ export default function Home() {
     return () => window.clearInterval(timer);
   }, [
     dontSayValidationPending,
+    dontSaySecret,
     invalidateVoiceQuestion,
+    isDontSayMode,
     status,
     timeoutMessage,
   ]);
@@ -4529,6 +5012,8 @@ export default function Home() {
 
     if (dontSayEliminated) {
       const endGame = window.setTimeout(() => {
+        saveRoundScore();
+        setCompletionCountdown(COMPLETION_RETURN_SECONDS);
         setStatus("done");
         setDontSayEliminated(false);
       }, 3800);
@@ -4561,9 +5046,11 @@ export default function Home() {
       window.clearTimeout(advance);
       setNextCountdown(null);
     };
-  }, [completeCurrentQuestion, dontSayEliminated, status]);
+  }, [completeCurrentQuestion, dontSayEliminated, saveRoundScore, status]);
 
-  const stopRealtimeVoice = useCallback(() => {
+  const stopWhisperVoice = useCallback(() => {
+    voiceStopRequestedRef.current = true;
+
     if (pendingVoiceSubmitRef.current) {
       window.clearTimeout(pendingVoiceSubmitRef.current);
       pendingVoiceSubmitRef.current = null;
@@ -4579,31 +5066,36 @@ export default function Home() {
       voiceAnalyserFrameRef.current = null;
     }
 
-    void voiceAudioContextRef.current?.close();
-    voiceAudioProcessorRef.current?.disconnect();
+    instantVoiceTimeoutsRef.current.forEach((timeout) => window.clearTimeout(timeout));
+    instantVoiceTimeoutsRef.current = [];
+
+    voiceMediaRecorderRef.current?.stream.getTracks().forEach((track) => track.stop());
+
+    if (voiceMediaRecorderRef.current?.state === "recording") {
+      voiceMediaRecorderRef.current.stop();
+    }
+
     voiceAudioSourceRef.current?.disconnect();
+    voiceAudioContextRef.current?.close();
+    voiceLocalStreamRef.current?.getTracks().forEach((track) => track.stop());
 
-    realtimeSocketRef.current?.close();
-    dataChannelRef.current?.close();
-    peerConnectionRef.current?.close();
-    localStreamRef.current?.getTracks().forEach((track) => track.stop());
-
-    realtimeSocketRef.current = null;
+    voiceMediaRecorderRef.current = null;
+    voiceLocalStreamRef.current = null;
     voiceAudioContextRef.current = null;
-    voiceAudioProcessorRef.current = null;
     voiceAudioSourceRef.current = null;
-    dataChannelRef.current = null;
-    peerConnectionRef.current = null;
-    localStreamRef.current = null;
-    voiceTranscriptByItemRef.current = {};
-    voiceQuestionVersionByItemRef.current = {};
-    voiceStartedAtByItemRef.current = {};
-    manualVoiceTurnRef.current = {
+    voiceAnalyserRef.current = null;
+    voiceRecordingChunksRef.current = [];
+    voiceTurnRef.current = {
       isSpeaking: false,
       speechStartedAt: 0,
       silenceStartedAt: 0,
       lastCommitAt: 0,
-      hasBufferedAudio: false,
+    };
+    instantVoiceAnswerIdsRef.current = new Set();
+    splitVoiceTranscriptRef.current = {
+      normalizedTranscript: "",
+      questionVersion: voiceQuestionVersionRef.current,
+      expiresAt: 0,
     };
     setIsListening(false);
     setVoiceStatus("idle");
@@ -4635,6 +5127,11 @@ export default function Home() {
       );
 
       if (voiceAnswers.length > 1) {
+        splitVoiceTranscriptRef.current = {
+          normalizedTranscript: normalize(answer),
+          questionVersion,
+          expiresAt: Date.now() + 4000,
+        };
         voiceAnswers.forEach((voiceAnswer, index) => {
           window.setTimeout(() => {
             if (
@@ -4666,40 +5163,19 @@ export default function Home() {
     }, VOICE_SUBMIT_DELAY_MS);
   }, []);
 
-  const startRealtimeVoice = useCallback(async () => {
+  const startWhisperVoice = useCallback(async () => {
     if (
-      realtimeSocketRef.current ||
-      peerConnectionRef.current ||
+      voiceMediaRecorderRef.current ||
       typeof window === "undefined" ||
       !navigator.mediaDevices?.getUserMedia
     ) {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        setVoiceStatus("error");
-        setVoiceError("Mic access is not available in this browser.");
-      }
       return;
     }
 
     try {
+      voiceStopRequestedRef.current = false;
       setVoiceStatus("connecting");
       setVoiceError("");
-
-      const tokenResponse = await fetch("/api/realtime/session", {
-        method: "POST",
-      });
-      const tokenData = (await tokenResponse.json()) as RealtimeTokenResponse & {
-        error?: string;
-      };
-
-      if (!tokenResponse.ok) {
-        throw new Error(tokenData.error ?? "Could not start OpenAI voice mode.");
-      }
-
-      const ephemeralKey = tokenData.value ?? tokenData.client_secret?.value;
-
-      if (!ephemeralKey) {
-        throw new Error("OpenAI did not return a client secret.");
-      }
 
       const localStream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -4708,242 +5184,201 @@ export default function Home() {
           autoGainControl: true,
         },
       });
-      const socket = new WebSocket(
-        "wss://api.openai.com/v1/realtime?intent=transcription",
-        ["realtime", `openai-insecure-api-key.${ephemeralKey}`],
+      const AudioContextConstructor =
+        window.AudioContext ||
+        (window as Window & { webkitAudioContext?: typeof AudioContext })
+          .webkitAudioContext;
+
+      if (!AudioContextConstructor || typeof MediaRecorder === "undefined") {
+        localStream.getTracks().forEach((track) => track.stop());
+        setVoiceStatus("error");
+        setVoiceError("Whisper voice mode is not available in this browser.");
+        setVoiceModeEnabled(false);
+        return;
+      }
+
+      const audioContext = new AudioContextConstructor();
+      const source = audioContext.createMediaStreamSource(localStream);
+      const analyser = audioContext.createAnalyser();
+      const mimeType = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4",
+      ].find((type) => MediaRecorder.isTypeSupported(type));
+      const mediaRecorder = new MediaRecorder(
+        localStream,
+        mimeType ? { mimeType } : undefined,
       );
 
-      realtimeSocketRef.current = socket;
-      localStreamRef.current = localStream;
+      analyser.fftSize = 2048;
+      source.connect(analyser);
 
-      socket.onopen = () => {
-        socket.send(
-          JSON.stringify({
-            type: "session.update",
-            session: REALTIME_TRANSCRIPTION_SESSION,
-          }),
-        );
+      voiceLocalStreamRef.current = localStream;
+      voiceAudioContextRef.current = audioContext;
+      voiceAudioSourceRef.current = source;
+      voiceAnalyserRef.current = analyser;
+      voiceMediaRecorderRef.current = mediaRecorder;
 
-        const AudioContextConstructor =
-          window.AudioContext ||
-          (window as typeof window & { webkitAudioContext?: typeof AudioContext })
-            .webkitAudioContext;
-
-        if (AudioContextConstructor) {
-          const audioContext = new AudioContextConstructor() as ScriptProcessorAudioContext;
-          const source = audioContext.createMediaStreamSource(localStream);
-          const processor = audioContext.createScriptProcessor(2048, 1, 1);
-
-          source.connect(processor);
-          processor.connect(audioContext.destination);
-          voiceAudioContextRef.current = audioContext;
-          voiceAudioSourceRef.current = source;
-          voiceAudioProcessorRef.current = processor;
-
-          processor.onaudioprocess = (audioEvent) => {
-            if (
-              socket.readyState !== WebSocket.OPEN ||
-              statusRef.current !== "playing"
-            ) {
-              return;
-            }
-
-            const input = audioEvent.inputBuffer.getChannelData(0);
-            const rms = getAudioRms(input);
-            const now = Date.now();
-            const turn = manualVoiceTurnRef.current;
-            const hasVoice = rms >= VOICE_RMS_THRESHOLD;
-
-            if (hasVoice) {
-              if (!turn.isSpeaking) {
-                turn.isSpeaking = true;
-                turn.speechStartedAt = now;
-                turn.silenceStartedAt = 0;
-                turn.hasBufferedAudio = false;
-                voiceQuestionVersionByItemRef.current.current =
-                  voiceQuestionVersionRef.current;
-                voiceStartedAtByItemRef.current.current = now;
-
-                if (pendingVoiceSubmitRef.current) {
-                  window.clearTimeout(pendingVoiceSubmitRef.current);
-                  pendingVoiceSubmitRef.current = null;
-                }
-
-                if (voiceTypingIntervalRef.current) {
-                  window.clearInterval(voiceTypingIntervalRef.current);
-                  voiceTypingIntervalRef.current = null;
-                }
-
-                setTypedAnswer("");
-              } else {
-                turn.silenceStartedAt = 0;
-              }
-            }
-
-            if (turn.isSpeaking) {
-              socket.send(
-                JSON.stringify({
-                  type: "input_audio_buffer.append",
-                  audio: encodePcm16Base64(input, audioContext.sampleRate),
-                }),
-              );
-              turn.hasBufferedAudio = true;
-            }
-
-            if (!hasVoice && turn.isSpeaking) {
-              if (!turn.silenceStartedAt) {
-                turn.silenceStartedAt = now;
-              }
-
-              const speechDurationMs = now - turn.speechStartedAt;
-              const silenceDurationMs = now - turn.silenceStartedAt;
-              const canCommit =
-                speechDurationMs >= VOICE_MIN_SPEECH_MS &&
-                silenceDurationMs >= VOICE_SILENCE_COMMIT_MS &&
-                now - turn.lastCommitAt >= VOICE_MIN_COMMIT_GAP_MS &&
-                turn.hasBufferedAudio;
-
-              if (canCommit) {
-                turn.isSpeaking = false;
-                turn.lastCommitAt = now;
-                turn.silenceStartedAt = 0;
-                turn.hasBufferedAudio = false;
-                socket.send(
-                  JSON.stringify({
-                    type: "input_audio_buffer.commit",
-                  }),
-                );
-              }
-            }
-          };
+      const transcribeRecording = async (blob: Blob, questionVersion: number) => {
+        if (voiceStopRequestedRef.current || statusRef.current !== "playing") {
+          return;
         }
 
-        setIsListening(true);
-        setVoiceStatus("listening");
+        const formData = new FormData();
+
+        formData.append("audio", blob, "voice.webm");
+
+        const response = await fetch("/api/voice/transcribe", {
+          method: "POST",
+          body: formData,
+        });
+        const result = (await response.json()) as WhisperTranscriptionResponse;
+
+        if (!response.ok) {
+          throw new Error(result.error ?? "Whisper transcription failed.");
+        }
+
+        const cleanedTranscript = cleanVoiceAnswer(result.transcript ?? "");
+        const normalizedTranscript = normalize(cleanedTranscript);
+
+        if (
+          !isProbablyIntentionalVoiceAnswer(cleanedTranscript) ||
+          questionVersion !== voiceQuestionVersionRef.current ||
+          statusRef.current !== "playing" ||
+          !normalizedTranscript
+        ) {
+          return;
+        }
+
+        const splitTranscript = splitVoiceTranscriptRef.current;
+        const shouldSuppressSplitTranscript =
+          splitTranscript.questionVersion === questionVersion &&
+          splitTranscript.expiresAt > Date.now() &&
+          (splitTranscript.normalizedTranscript === normalizedTranscript ||
+            splitTranscript.normalizedTranscript.includes(normalizedTranscript) ||
+            normalizedTranscript.includes(splitTranscript.normalizedTranscript));
+
+        if (!shouldSuppressSplitTranscript) {
+          submitVoiceAnswer(cleanedTranscript);
+        }
       };
 
-      socket.onclose = () => {
-        setIsListening(false);
-        setVoiceStatus((currentStatus) =>
-          currentStatus === "error" ? currentStatus : "idle",
-        );
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          voiceRecordingChunksRef.current.push(event.data);
+        }
       };
 
-      socket.onerror = () => {
+      mediaRecorder.onerror = () => {
         setVoiceStatus("error");
-        setVoiceError("Voice connection dropped.");
+        setVoiceError("Whisper recording hit an error.");
       };
 
-      socket.onmessage = (event) => {
-        const realtimeEvent = JSON.parse(event.data as string) as RealtimeServerEvent;
+      mediaRecorder.onstop = () => {
+        const chunks = voiceRecordingChunksRef.current;
+        const questionVersion = voiceQuestionVersionRef.current;
 
-        if (realtimeEvent.type === "input_audio_buffer.speech_started") {
-          if (statusRef.current !== "playing") {
-            return;
-          }
+        voiceRecordingChunksRef.current = [];
 
-          const itemId = realtimeEvent.item_id;
+        if (!voiceStopRequestedRef.current && chunks.length) {
+          const blob = new Blob(chunks, {
+            type: mediaRecorder.mimeType || "audio/webm",
+          });
 
-          if (itemId) {
-            voiceQuestionVersionByItemRef.current[itemId] =
-              voiceQuestionVersionRef.current;
-            voiceStartedAtByItemRef.current[itemId] = Date.now();
-          }
-
-          if (pendingVoiceSubmitRef.current) {
-            window.clearTimeout(pendingVoiceSubmitRef.current);
-            pendingVoiceSubmitRef.current = null;
-          }
-
-          if (voiceTypingIntervalRef.current) {
-            window.clearInterval(voiceTypingIntervalRef.current);
-            voiceTypingIntervalRef.current = null;
-          }
-
-          setTypedAnswer("");
+          void transcribeRecording(blob, questionVersion).catch((error) => {
+            if (!voiceStopRequestedRef.current) {
+              setVoiceStatus("error");
+              setVoiceError(
+                error instanceof Error ? error.message : "Whisper transcription failed.",
+              );
+            }
+          });
         }
 
         if (
-          realtimeEvent.type === "conversation.item.input_audio_transcription.delta" &&
-          realtimeEvent.delta
+          !voiceStopRequestedRef.current &&
+          voiceModeEnabledRef.current &&
+          statusRef.current === "playing" &&
+          voiceMediaRecorderRef.current === mediaRecorder
         ) {
-          const itemId = realtimeEvent.item_id ?? "current";
-
-          if (!(itemId in voiceQuestionVersionByItemRef.current)) {
-            voiceQuestionVersionByItemRef.current[itemId] =
-              voiceQuestionVersionRef.current;
+          try {
+            mediaRecorder.start(250);
+          } catch {
+            setVoiceStatus("error");
+            setVoiceError("Whisper recording could not restart.");
           }
-
-          if (
-            voiceQuestionVersionByItemRef.current[itemId] !==
-              voiceQuestionVersionRef.current ||
-            statusRef.current !== "playing"
-          ) {
-            return;
-          }
-
-          const nextTranscript = `${voiceTranscriptByItemRef.current[itemId] ?? ""}${
-            realtimeEvent.delta
-          }`;
-
-          voiceTranscriptByItemRef.current[itemId] = nextTranscript;
-        }
-
-        if (realtimeEvent.type === "conversation.item.input_audio_transcription.completed") {
-          const itemId = realtimeEvent.item_id ?? "current";
-          const itemVersion =
-            voiceQuestionVersionByItemRef.current[itemId] ??
-            voiceQuestionVersionByItemRef.current.current;
-          const transcript = (
-            realtimeEvent.transcript ?? voiceTranscriptByItemRef.current[itemId] ?? ""
-          ).trim();
-          const cleanedTranscript = cleanVoiceAnswer(transcript);
-          const speechDurationMs =
-            Date.now() - (voiceStartedAtByItemRef.current[itemId] ?? Date.now());
-          const normalizedTranscript = normalize(cleanedTranscript);
-          const isVeryShortNoise =
-            speechDurationMs < 280 && normalizedTranscript.replace(/\s/g, "").length < 4;
-
-          if (
-            isProbablyIntentionalVoiceAnswer(cleanedTranscript) &&
-            !isVeryShortNoise &&
-            itemVersion === voiceQuestionVersionRef.current &&
-            statusRef.current === "playing"
-          ) {
-            submitVoiceAnswer(cleanedTranscript);
-          }
-
-          delete voiceTranscriptByItemRef.current[itemId];
-          delete voiceQuestionVersionByItemRef.current[itemId];
-          delete voiceStartedAtByItemRef.current[itemId];
-          delete voiceQuestionVersionByItemRef.current.current;
-          delete voiceStartedAtByItemRef.current.current;
-        }
-
-        if (realtimeEvent.type === "conversation.item.input_audio_transcription.failed") {
-          setVoiceStatus("error");
-          setVoiceError(realtimeEvent.error?.message ?? "Voice transcription failed.");
-        }
-
-        if (realtimeEvent.type === "error") {
-          setVoiceStatus("error");
-          setVoiceError(realtimeEvent.error?.message ?? "OpenAI voice mode hit an error.");
         }
       };
+
+      mediaRecorder.start(250);
+      setIsListening(true);
+      setVoiceStatus("listening");
+
+      const samples = new Uint8Array(analyser.fftSize);
+      const monitorVoice = () => {
+        if (
+          voiceStopRequestedRef.current ||
+          statusRef.current !== "playing" ||
+          voiceMediaRecorderRef.current !== mediaRecorder
+        ) {
+          return;
+        }
+
+        analyser.getByteTimeDomainData(samples);
+
+        const rms = getAudioByteRms(samples);
+        const now = Date.now();
+        const turn = voiceTurnRef.current;
+        const hasVoice = rms >= WHISPER_RMS_THRESHOLD;
+
+        if (hasVoice) {
+          if (!turn.isSpeaking) {
+            turn.isSpeaking = true;
+            turn.speechStartedAt = now;
+          }
+
+          turn.silenceStartedAt = 0;
+        } else if (turn.isSpeaking) {
+          if (!turn.silenceStartedAt) {
+            turn.silenceStartedAt = now;
+          }
+
+          const speechDurationMs = now - turn.speechStartedAt;
+          const silenceDurationMs = now - turn.silenceStartedAt;
+          const canCommit =
+            speechDurationMs >= WHISPER_MIN_SPEECH_MS &&
+            silenceDurationMs >= WHISPER_SILENCE_COMMIT_MS &&
+            now - turn.lastCommitAt >= WHISPER_MIN_COMMIT_GAP_MS &&
+            mediaRecorder.state === "recording";
+
+          if (canCommit) {
+            turn.isSpeaking = false;
+            turn.silenceStartedAt = 0;
+            turn.lastCommitAt = now;
+            mediaRecorder.stop();
+          }
+        }
+
+        voiceAnalyserFrameRef.current = window.requestAnimationFrame(monitorVoice);
+      };
+
+      voiceAnalyserFrameRef.current = window.requestAnimationFrame(monitorVoice);
     } catch (error) {
-      stopRealtimeVoice();
+      stopWhisperVoice();
       setVoiceModeEnabled(false);
       setVoiceStatus("error");
-      setVoiceError(error instanceof Error ? error.message : "Voice mode could not start.");
+      setVoiceError(
+        error instanceof Error ? error.message : "Whisper voice mode could not start.",
+      );
     }
-  }, [stopRealtimeVoice, submitVoiceAnswer]);
+  }, [stopWhisperVoice, submitVoiceAnswer]);
 
   const startRound = () => {
-    if (!usernameReady && homeView !== "lobby") {
+    if (!canPlaySelectedGameMode || (!usernameReady && homeView !== "lobby")) {
       return;
     }
 
-    const nextQueue = getRoundQuestionQueue(
+    const nextQueue = getFreshRoundQuestionQueue(
       activeQuestions,
       selectedCategory,
       selectedGameMode,
@@ -4953,6 +5388,7 @@ export default function Home() {
     roundSavedRef.current = false;
     setQuestionQueue(nextQueue);
     setScore(0);
+    setQuestionsAnswered(0);
     setAcceptedAnswersByQuestion({});
     setTypedAnswer("");
     setVoiceModeEnabled(true);
@@ -4967,9 +5403,10 @@ export default function Home() {
     setWrongAttemptCount(0);
     setNextCountdown(null);
     setStartCountdown(3);
+    setCompletionCountdown(COMPLETION_RETURN_SECONDS);
   };
 
-  const returnToStart = () => {
+  const returnToStart = useCallback(() => {
     const nextQueue = getRoundQuestionQueue(
       activeQuestions,
       selectedCategory,
@@ -4977,7 +5414,7 @@ export default function Home() {
     );
     const firstQuestion = activeQuestions[nextQueue[0]] ?? activeQuestions[0];
 
-    stopRealtimeVoice();
+    stopWhisperVoice();
     setVoiceModeEnabled(false);
     setQuestionQueue(nextQueue);
     setTypedAnswer("");
@@ -4985,6 +5422,7 @@ export default function Home() {
     setDontSayEliminated(false);
     setSecondsLeft(getQuestionSeconds(firstQuestion));
     setScore(0);
+    setQuestionsAnswered(0);
     setStatus("ready");
     setMessage("");
     setScoreDelta(0);
@@ -4993,7 +5431,53 @@ export default function Home() {
     setWrongAttemptCount(0);
     setNextCountdown(null);
     setStartCountdown(null);
-  };
+    setCompletionCountdown(COMPLETION_RETURN_SECONDS);
+  }, [
+    activeQuestions,
+    selectedCategory,
+    selectedGameMode,
+    stopWhisperVoice,
+  ]);
+
+  useEffect(() => {
+    if (status !== "done") {
+      return;
+    }
+
+    const ticks = Array.from({ length: COMPLETION_RETURN_SECONDS - 1 }, (_, index) =>
+      window.setTimeout(() => {
+        setCompletionCountdown(COMPLETION_RETURN_SECONDS - index - 1);
+      }, 1250 + index * 1000),
+    );
+    const goHome = window.setTimeout(() => {
+      returnToStart();
+    }, 1250 + (COMPLETION_RETURN_SECONDS - 1) * 1000);
+
+    return () => {
+      ticks.forEach((tick) => window.clearTimeout(tick));
+      window.clearTimeout(goHome);
+    };
+  }, [returnToStart, status]);
+
+  const endGameEarly = useCallback(() => {
+    if (statusRef.current === "done" || statusRef.current === "ready") {
+      return;
+    }
+
+    statusRef.current = "done";
+    setEndGameConfirmOpen(false);
+    setGameOptionsOpen(false);
+    stopWhisperVoice();
+    setVoiceModeEnabled(false);
+    saveRoundScore();
+    setMessage("");
+    setNextCountdown(null);
+    setStartCountdown(null);
+    setDontSayEliminated(false);
+    setDontSayValidationPending(false);
+    setCompletionCountdown(COMPLETION_RETURN_SECONDS);
+    setStatus("done");
+  }, [saveRoundScore, stopWhisperVoice]);
 
   const toggleVoiceInput = () => {
     setVoiceModeEnabled((enabled) => !enabled);
@@ -5049,6 +5533,8 @@ export default function Home() {
           prompt: currentDontSayQuestion.prompt,
           guidance: currentDontSayQuestion.guidance,
           answer: rawAnswer,
+          validationMode: currentDontSayQuestion.validationMode,
+          acceptedAnswers: currentDontSayQuestion.acceptedAnswers,
         }),
       });
       const validation = (await response.json()) as DontSayValidation & {
@@ -5078,8 +5564,9 @@ export default function Home() {
           normalizedAnswer: normalizeAnswer(fallbackSecretAnswer),
         };
       const matchedAi =
-        normalizedPlayerAnswer === secretAnswer.normalizedAnswer ||
-        normalizeAnswer(rawAnswer) === secretAnswer.normalizedAnswer;
+        areSameDontSayAnswer(validation.canonicalAnswer, secretAnswer.answer) ||
+        areSameDontSayAnswer(rawAnswer, secretAnswer.answer) ||
+        areSameDontSayAnswer(normalizedPlayerAnswer, secretAnswer.normalizedAnswer);
 
       setDontSayLastAnswer(validation.canonicalAnswer);
       setTypedAnswer("");
@@ -5517,7 +6004,7 @@ export default function Home() {
   useEffect(() => {
     if (voiceModeEnabled && status !== "ready" && status !== "done") {
       const connect = window.setTimeout(() => {
-        void startRealtimeVoice();
+        void startWhisperVoice();
       }, 0);
 
       return () => window.clearTimeout(connect);
@@ -5525,14 +6012,14 @@ export default function Home() {
 
     if (!voiceModeEnabled || status === "ready" || status === "done") {
       const disconnect = window.setTimeout(() => {
-        stopRealtimeVoice();
+        stopWhisperVoice();
       }, 0);
 
       return () => window.clearTimeout(disconnect);
     }
-  }, [startRealtimeVoice, status, stopRealtimeVoice, voiceModeEnabled]);
+  }, [startWhisperVoice, status, stopWhisperVoice, voiceModeEnabled]);
 
-  useEffect(() => () => stopRealtimeVoice(), [stopRealtimeVoice]);
+  useEffect(() => () => stopWhisperVoice(), [stopWhisperVoice]);
 
   useEffect(() => {
     if (startCountdown === null) {
@@ -5574,7 +6061,14 @@ export default function Home() {
             )}
           </div>
         ) : null}
-        <section className="mx-auto flex min-h-screen w-full max-w-5xl flex-col justify-center px-6 py-10">
+        <section
+          className={[
+            "mx-auto flex min-h-screen w-full max-w-5xl flex-col px-6",
+            homeView === "play" || homeView === "lobby"
+              ? "justify-center py-10"
+              : "justify-start pb-20 pt-[clamp(5.5rem,14vh,10rem)]",
+          ].join(" ")}
+        >
           {homeView === "play" ? (
             <>
               <div className="fixed left-6 top-6 z-20" ref={otherMenuRef}>
@@ -5618,6 +6112,16 @@ export default function Home() {
                     <button
                       className="flex h-11 w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-950"
                       onClick={() => {
+                        setHomeView("games");
+                        setOtherMenuOpen(false);
+                      }}
+                      type="button"
+                    >
+                      Games
+                    </button>
+                    <button
+                      className="flex h-11 w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-950"
+                      onClick={() => {
                         setHomeView("settings");
                         setOtherMenuOpen(false);
                       }}
@@ -5646,25 +6150,127 @@ export default function Home() {
             </button>
           )}
           <div className="mx-auto w-full max-w-3xl text-center">
-            <h1 className="text-5xl font-bold leading-[0.95] tracking-normal text-balance sm:text-7xl">
+            {homeView === "play" ? (
+              <div
+                aria-hidden="true"
+                className="home-game-blob home-enter mx-auto mb-5 h-24 w-24 sm:h-28 sm:w-28"
+              >
+                <svg viewBox="0 0 120 120" className="h-full w-full">
+                  <defs>
+                    <linearGradient id="homeGameBlobGradient" x1="28" x2="92" y1="18" y2="98">
+                      <stop offset="0" stopColor="#F0ABFC" />
+                      <stop offset="0.54" stopColor="#A78BFA" />
+                      <stop offset="1" stopColor="#60A5FA" />
+                    </linearGradient>
+                    <linearGradient id="homeGameSecondBlobGradient" x1="22" x2="70" y1="36" y2="96">
+                      <stop offset="0" stopColor="#99F6E4" />
+                      <stop offset="1" stopColor="#38BDF8" />
+                    </linearGradient>
+                    <linearGradient id="homeGameQuestionGradient" x1="0" x2="1" y1="0" y2="1">
+                      <stop offset="0" stopColor="#FFFFFF" />
+                      <stop offset="1" stopColor="#EEF2FF" />
+                    </linearGradient>
+                  </defs>
+                  <ellipse cx="60" cy="101" fill="#E2E8F0" opacity="0.44" rx="40" ry="7" />
+                  <g className="home-game-blob-friend">
+                    <path
+                      d="M18 69c0-16 10-27 26-27s26 11 26 27c0 15-10 25-26 25S18 84 18 69Z"
+                      fill="url(#homeGameSecondBlobGradient)"
+                    />
+                    <g className="home-game-tune">
+                      <g transform="translate(-17 16) scale(0.28)">
+                        <path
+                          d="M190 60V101"
+                          fill="none"
+                          stroke="#F59E0B"
+                          strokeLinecap="round"
+                          strokeWidth="9"
+                        />
+                        <path
+                          d="M190 60H218V78H190"
+                          fill="none"
+                          stroke="#F59E0B"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth="9"
+                        />
+                        <circle cx="181" cy="105" r="12" fill="#F59E0B" />
+                      </g>
+                    </g>
+                    <circle cx="36" cy="66" r="4" fill="#111827" />
+                    <circle cx="51" cy="66" r="4" fill="#111827" />
+                    <path
+                      d="M37 78c4 3 9 3 13 0"
+                      fill="none"
+                      stroke="#155E75"
+                      strokeLinecap="round"
+                      strokeWidth="3"
+                    />
+                  </g>
+                  <g className="home-game-blob-body">
+                    <path
+                      d="M48 62c0-22 14-36 35-36 20 0 32 14 32 35 0 21-13 33-34 33-20 0-33-12-33-32Z"
+                      fill="url(#homeGameBlobGradient)"
+                    />
+                    <circle cx="73" cy="55" fill="#FFFFFF" rx="9" ry="11" />
+                    <circle cx="94" cy="55" fill="#FFFFFF" rx="9" ry="11" />
+                    <circle cx="76" cy="58" fill="#111827" r="4.4" />
+                    <circle cx="91" cy="58" fill="#111827" r="4.4" />
+                    <path
+                      d="M75 73c5 4 12 4 17 0"
+                      fill="none"
+                      stroke="#312E81"
+                      strokeLinecap="round"
+                      strokeWidth="3.5"
+                    />
+                  </g>
+                  <g className="home-game-question-chip">
+                    <rect
+                      x="86"
+                      y="20"
+                      width="25"
+                      height="25"
+                      rx="9"
+                      fill="url(#homeGameQuestionGradient)"
+                      stroke="#C4B5FD"
+                      strokeWidth="1.5"
+                    />
+                    <path
+                      d="M98.5 35.5v-.4c0-2.8 4-2.9 4-6 0-2.2-1.8-3.7-4.1-3.7-2 0-3.5 1-4.2 2.8M98.5 40.5h.1"
+                      fill="none"
+                      stroke="#7C3AED"
+                      strokeLinecap="round"
+                      strokeWidth="2.6"
+                    />
+                  </g>
+                </svg>
+              </div>
+            ) : null}
+            <h1
+              className={[
+                "font-bold leading-[0.95] tracking-normal text-balance",
+                homeView === "play"
+                  ? "home-enter home-enter-title text-5xl sm:text-7xl"
+                  : "text-4xl sm:text-5xl",
+              ].join(" ")}
+            >
               {homeView === "play"
                 ? "Gameboard"
                 : homeView === "leaderboard"
                   ? "Leaderboard"
                   : homeView === "about"
-                    ? "About the game"
+                    ? "About"
                     : homeView === "settings"
                       ? "Settings"
+                      : homeView === "games"
+                        ? "Games"
                       : (
                         <span className="group/name inline-flex items-center gap-3">
                           <span>{groupName}</span>
                           <button
                             aria-label="Edit group name"
                             className="group-name-edit grid h-9 w-9 place-items-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-[0_12px_30px_rgba(15,23,42,0.08)] transition hover:-translate-y-0.5 hover:border-slate-950 hover:text-slate-950 hover:shadow-[0_16px_36px_rgba(15,23,42,0.12)]"
-                            onClick={() => {
-                              setDraftGroupName(groupName);
-                              setGroupNameModalOpen(true);
-                            }}
+                            onClick={openEditGroupNameModal}
                             type="button"
                           >
                             <svg
@@ -5685,22 +6291,27 @@ export default function Home() {
                         </span>
                       )}
             </h1>
-            <p className="mx-auto mt-6 max-w-2xl text-lg font-normal leading-8 text-slate-500">
-              {homeView === "play"
-                ? "Pick a mode and play solo or with a group."
-                : homeView === "leaderboard"
+            <p
+              className={[
+                "mx-auto mt-6 max-w-2xl text-lg font-normal leading-8 text-slate-500",
+                homeView === "play" ? "home-enter home-enter-subtitle" : "",
+              ].join(" ")}
+            >
+              {homeView === "play" ? null : homeView === "leaderboard"
                   ? "Top scores from players around the world."
                   : homeView === "about"
                     ? "A fast trivia game built for typing, voice answers, and quick rounds."
                     : homeView === "settings"
                       ? "Update your player name and avatar."
+                      : homeView === "games"
+                        ? "Browse the game modes on the board."
                       : "Wait for players, invite friends, and start when ready."}
             </p>
 
             {homeView === "play" ? (
               <div className="mx-auto mt-10 w-full max-w-3xl text-center">
                 <div
-                  className="flex flex-wrap items-center justify-center gap-x-2 gap-y-2 text-xl font-bold leading-[1.45] text-slate-950 sm:text-2xl"
+                  className="home-enter home-enter-builder flex flex-wrap items-center justify-center gap-x-2 gap-y-2 text-xl font-bold leading-[1.45] text-slate-950 sm:text-2xl"
                 >
                   <span>Play</span>
                   <button
@@ -5709,7 +6320,12 @@ export default function Home() {
                     onClick={cycleGameMode}
                     type="button"
                   >
-                    {gameModeMeta[selectedGameMode].title}
+                    <span
+                      className="sentence-pill-text-reveal"
+                      key={`mode-label-${selectedGameMode}`}
+                    >
+                      {gameModeMeta[selectedGameMode].title}
+                    </span>
                     <CycleIcon />
                   </button>
                   <span>in</span>
@@ -5719,7 +6335,12 @@ export default function Home() {
                     onClick={cycleCategory}
                     type="button"
                   >
-                    {categoryMeta[selectedCategory].label}
+                    <span
+                      className="sentence-pill-text-reveal"
+                      key={`category-label-${selectedCategory}`}
+                    >
+                      {categoryMeta[selectedCategory].label}
+                    </span>
                     <CycleIcon />
                   </button>
                   <span>on</span>
@@ -5729,12 +6350,17 @@ export default function Home() {
                     onClick={cycleDifficulty}
                     type="button"
                   >
-                    {difficultyMeta[selectedDifficulty].toLowerCase()}
+                    <span
+                      className="sentence-pill-text-reveal"
+                      key={`difficulty-label-${selectedDifficulty}`}
+                    >
+                      {difficultyMeta[selectedDifficulty].toLowerCase()}
+                    </span>
                     <CycleIcon />
                   </button>
                   <span>mode</span>
                 </div>
-                <div className="group/info relative mx-auto mt-6 inline-flex max-w-xl items-center justify-center gap-2 text-base font-medium leading-7 text-slate-500">
+                <div className="home-enter home-enter-info group/info relative mx-auto mt-6 inline-flex max-w-xl items-center justify-center gap-2 text-base font-medium leading-7 text-slate-500">
                   <span>{gameModeMeta[selectedGameMode].body}</span>
                   <button
                     aria-label={`${gameModeMeta[selectedGameMode].title} details`}
@@ -5770,7 +6396,11 @@ export default function Home() {
               <div
                 className={[
                   "mx-auto mt-8 w-full text-left",
-                  homeView === "leaderboard" ? "max-w-md" : "max-w-xl",
+                  homeView === "leaderboard"
+                    ? "max-w-md"
+                    : homeView === "games"
+                      ? "max-w-4xl"
+                      : "max-w-xl",
                 ].join(" ")}
               >
                 {homeView === "about" ? (
@@ -5865,18 +6495,24 @@ export default function Home() {
                     <div
                       className={[
                         "relative overflow-hidden rounded-xl",
-                        lobbyPlayersScroll.canScrollUp ? "leaderboard-fade-top" : "",
-                        lobbyPlayersScroll.canScrollDown ? "leaderboard-fade-bottom" : "",
+                        lobbyCanOverflow && lobbyPlayersScroll.canScrollUp
+                          ? "leaderboard-fade-top"
+                          : "",
+                        lobbyCanOverflow && lobbyPlayersScroll.canScrollDown
+                          ? "leaderboard-fade-bottom"
+                          : "",
                       ].join(" ")}
                     >
                       <div
                         className="max-h-[16rem] overflow-y-auto overscroll-contain pr-1"
+                        ref={lobbyPlayersRef}
                         onScroll={(event) => {
                           const element = event.currentTarget;
 
                           setLobbyPlayersScroll({
-                            canScrollUp: element.scrollTop > 2,
+                            canScrollUp: lobbyCanOverflow && element.scrollTop > 2,
                             canScrollDown:
+                              lobbyCanOverflow &&
                               element.scrollTop + element.clientHeight <
                               element.scrollHeight - 2,
                           });
@@ -6080,6 +6716,64 @@ export default function Home() {
                       </button>
                     </section>
                   </div>
+                ) : homeView === "games" ? (
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    {gameModes.map((mode) => (
+                      <button
+                        className="games-card-enter group min-w-0 rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-[0_14px_34px_rgba(15,23,42,0.06)] transition duration-200 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-[0_20px_48px_rgba(15,23,42,0.1)]"
+                        key={mode}
+                        onClick={() => setActiveGameDetails(mode)}
+                        style={{
+                          animationDelay: `${gameModes.indexOf(mode) * 80}ms`,
+                        }}
+                        type="button"
+                      >
+                        <Image
+                          className="-ml-2 h-16 w-16 object-contain transition group-hover:scale-105"
+                          src={gameModeIllustrations[mode]}
+                          alt=""
+                          width={64}
+                          height={64}
+                          unoptimized
+                        />
+                        <div className="mt-2.5 flex min-w-0 items-center gap-2">
+                          <h2 className="truncate text-lg font-bold text-slate-950">
+                            {gameModeMeta[mode].title}
+                          </h2>
+                          {!(playableGameModes as readonly GameMode[]).includes(mode) ? (
+                            <span className="inline-flex shrink-0 items-center rounded-full bg-violet-100 px-2.5 py-1 text-xs font-bold leading-none text-violet-800">
+                              Soon
+                            </span>
+                          ) : null}
+                        </div>
+                      </button>
+                    ))}
+                    <button
+                      className="games-card-enter group min-w-0 rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-[0_14px_34px_rgba(15,23,42,0.06)] transition duration-200 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-[0_20px_48px_rgba(15,23,42,0.1)]"
+                      onClick={() => setRequestGameModalOpen(true)}
+                      style={{ animationDelay: "260ms" }}
+                      type="button"
+                    >
+                      <span className="grid h-12 w-12 place-items-center rounded-full border border-slate-200 text-slate-700 transition group-hover:border-slate-300 group-hover:text-slate-950">
+                        <svg
+                          className="h-5 w-5"
+                          aria-hidden="true"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            d="M12 5v14M5 12h14"
+                            stroke="currentColor"
+                            strokeLinecap="round"
+                            strokeWidth="2.4"
+                          />
+                        </svg>
+                      </span>
+                      <h2 className="mt-2.5 truncate text-lg font-bold text-slate-950">
+                        Request game
+                      </h2>
+                    </button>
+                  </div>
                 ) : (
                   <>
                 <div className="mb-4 flex rounded-full border border-slate-200 bg-white p-1 shadow-[0_12px_30px_rgba(15,23,42,0.06)]">
@@ -6126,9 +6820,12 @@ export default function Home() {
                       });
                     }}
                   >
-                  {activeLeaderboard.map((entry, index) => (
+                  {activeLeaderboard.length ? activeLeaderboard.map((entry, index) => (
                     <div
-                      className="leaderboard-row flex items-center justify-between border-b border-slate-100 px-5 py-4 last:border-b-0"
+                      className={[
+                        "leaderboard-row flex items-center justify-between border-b border-slate-100 px-5 py-4 last:border-b-0",
+                        entry.isLocalPlayer ? "bg-violet-50/70" : "",
+                      ].join(" ")}
                       key={entry.name}
                       style={{
                         "--row-delay": `${Math.min(index, 18) * 0.026}s`,
@@ -6151,6 +6848,11 @@ export default function Home() {
                         <span className="text-lg font-bold text-slate-950">
                           {entry.name}
                         </span>
+                        {entry.isLocalPlayer ? (
+                          <span className="rounded-full bg-violet-100 px-2.5 py-1 text-xs font-bold leading-none text-violet-800">
+                            You
+                          </span>
+                        ) : null}
                       </div>
                       <span className="flex items-center gap-2 text-lg font-bold tabular-nums text-slate-950">
                         {index < 3 ? (
@@ -6161,7 +6863,16 @@ export default function Home() {
                         <span>{entry.score.toLocaleString()}</span>
                       </span>
                     </div>
-                  ))}
+                  )) : (
+                    <div className="px-5 py-16 text-center">
+                      <p className="text-lg font-bold text-slate-950">
+                        No local score yet
+                      </p>
+                      <p className="mt-2 text-base font-normal text-slate-500">
+                        Play a round and your saved score will show here.
+                      </p>
+                    </div>
+                  )}
                   </div>
                 </div>
                 </>
@@ -6173,22 +6884,36 @@ export default function Home() {
         <div
           className={[
             "fixed inset-x-0 bottom-6 z-20 flex-col items-center justify-center gap-3 px-5 sm:flex-row",
-            homeView === "play" ? "flex" : "hidden",
+            homeView === "play" ? "home-enter home-enter-cta flex" : "hidden",
           ].join(" ")}
         >
           <button
             className="flex h-14 w-full max-w-[16rem] items-center justify-center rounded-full bg-slate-950 px-8 text-lg font-medium text-white shadow-[0_18px_60px_rgba(15,23,42,0.22)] transition duration-300 ease-out hover:-translate-y-0.5 hover:bg-slate-900 hover:shadow-[0_26px_76px_rgba(15,23,42,0.3)] active:translate-y-0 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-white disabled:shadow-none disabled:hover:translate-y-0"
-            disabled={!usernameReady}
+            disabled={!usernameReady || !canPlaySelectedGameMode}
             onClick={startRound}
-            title={usernameReady ? "Play solo" : "Enter a username first"}
+            title={
+              !canPlaySelectedGameMode
+                ? "Karaoke is locked for now"
+                : usernameReady
+                  ? "Play solo"
+                  : "Enter a username first"
+            }
             type="button"
           >
             Play solo
           </button>
           <div className="flex h-14 w-full max-w-[25rem] overflow-hidden rounded-full border border-slate-200 bg-white shadow-[0_18px_55px_rgba(15,23,42,0.08)] transition duration-300 ease-out hover:shadow-[0_24px_68px_rgba(15,23,42,0.12)]">
             <button
-              className="flex min-w-0 flex-1 items-center justify-center px-5 text-base font-medium text-slate-400 transition hover:bg-slate-50 hover:text-slate-500 sm:text-lg"
-              onClick={() => {}}
+              className="flex min-w-0 flex-1 items-center justify-center px-5 text-base font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-950 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white disabled:hover:text-slate-300 sm:text-lg"
+              disabled={!usernameReady || !canPlaySelectedGameMode}
+              onClick={openStartGroupModal}
+              title={
+                !canPlaySelectedGameMode
+                  ? "This game mode is locked for now"
+                  : usernameReady
+                    ? "Start a group"
+                    : "Enter a username first"
+              }
               type="button"
             >
               Start a group
@@ -6211,9 +6936,15 @@ export default function Home() {
         >
           <button
             className="flex h-14 w-full max-w-[14rem] items-center justify-center rounded-full bg-slate-950 px-8 text-lg font-medium text-white shadow-[0_18px_60px_rgba(15,23,42,0.22)] transition duration-300 ease-out hover:-translate-y-0.5 hover:bg-slate-900 hover:shadow-[0_26px_76px_rgba(15,23,42,0.3)] active:translate-y-0 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-white disabled:shadow-none disabled:hover:translate-y-0"
-            disabled={!canStartGroupGame}
+            disabled={!canStartGroupGame || !canPlaySelectedGameMode}
             onClick={startRound}
-            title={canStartGroupGame ? "Start game" : "Need at least 2 players"}
+            title={
+              !canPlaySelectedGameMode
+                ? "Karaoke is locked for now"
+                : canStartGroupGame
+                  ? "Start game"
+                  : "Need at least 2 players"
+            }
             type="button"
           >
             Start game
@@ -6254,9 +6985,207 @@ export default function Home() {
             {inviteCopied ? "Copied" : "Copy game URL"}
           </button>
         </div>
+        {activeGameDetails ? (
+          <div
+            className="modal-backdrop fixed inset-0 z-40 grid place-items-center bg-white/55 px-5 backdrop-blur-xl"
+            onClick={() => setActiveGameDetails(null)}
+          >
+            <div
+              className="modal-panel w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 text-left shadow-[0_28px_90px_rgba(15,23,42,0.18)]"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4">
+                <Image
+                  className="h-20 w-20 shrink-0 object-contain"
+                  src={gameModeIllustrations[activeGameDetails]}
+                  alt=""
+                  width={80}
+                  height={80}
+                  unoptimized
+                />
+                <button
+                  aria-label="Close game details"
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-slate-950"
+                  onClick={() => setActiveGameDetails(null)}
+                  type="button"
+                >
+                  <XIcon />
+                </button>
+              </div>
+              <div className="mt-5 flex min-w-0 items-center gap-2">
+                <h2 className="truncate text-3xl font-bold leading-tight text-slate-950">
+                  {gameModeMeta[activeGameDetails].title}
+                </h2>
+                {!(playableGameModes as readonly GameMode[]).includes(
+                  activeGameDetails,
+                ) ? (
+                  <span className="inline-flex shrink-0 items-center rounded-full bg-violet-100 px-2.5 py-1 text-xs font-bold leading-none text-violet-800">
+                    Soon
+                  </span>
+                ) : null}
+              </div>
+              <p className="mt-3 text-base font-medium leading-7 text-slate-500">
+                {gameModeMeta[activeGameDetails].body}
+              </p>
+              <p className="mt-4 text-sm font-medium leading-6 text-slate-500">
+                {gameModeMeta[activeGameDetails].detail}
+              </p>
+              <button
+                className="mt-6 h-12 w-full rounded-full bg-slate-950 px-5 text-base font-medium text-white transition hover:bg-slate-900 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:hover:bg-slate-300"
+                disabled={
+                  !(playableGameModes as readonly GameMode[]).includes(
+                    activeGameDetails,
+                  )
+                }
+                onClick={() => {
+                  if (
+                    !(playableGameModes as readonly GameMode[]).includes(
+                      activeGameDetails,
+                    )
+                  ) {
+                    return;
+                  }
+
+                  const nextMode = activeGameDetails;
+                  const nextQuestions = getModeQuestions(
+                    nextMode,
+                    selectedCategory,
+                    selectedDifficulty,
+                  );
+
+                  setSelectedGameMode(nextMode);
+                  setQuestionQueue(
+                    getRoundQuestionQueue(nextQuestions, selectedCategory, nextMode),
+                  );
+                  setAcceptedAnswersByQuestion({});
+                  setActiveGameDetails(null);
+                  setHomeView("play");
+                }}
+                type="button"
+              >
+                Play game
+              </button>
+            </div>
+          </div>
+        ) : null}
+        {requestGameModalOpen ? (
+          <div
+            className="modal-backdrop fixed inset-0 z-40 grid place-items-center bg-white/55 px-5 backdrop-blur-xl"
+            onClick={() => setRequestGameModalOpen(false)}
+          >
+            <form
+              className="modal-panel w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 text-left shadow-[0_28px_90px_rgba(15,23,42,0.18)]"
+              onClick={(event) => event.stopPropagation()}
+              onSubmit={(event) => {
+                event.preventDefault();
+
+                if (!gameRequest.trim()) {
+                  return;
+                }
+
+                setGameRequest("");
+                setRequestGameModalOpen(false);
+              }}
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-3xl font-bold leading-tight text-slate-950">
+                    Request game
+                  </h2>
+                  <p className="mt-3 text-sm font-medium leading-6 text-slate-500">
+                    Tell us what kind of game you want on the board.
+                  </p>
+                </div>
+                <button
+                  aria-label="Close request game"
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-slate-950"
+                  onClick={() => setRequestGameModalOpen(false)}
+                  type="button"
+                >
+                  <XIcon />
+                </button>
+              </div>
+              <textarea
+                className="mt-5 min-h-36 w-full resize-none rounded-2xl border border-slate-200 bg-white px-4 py-3 text-base font-medium leading-7 text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-slate-400"
+                onChange={(event) => setGameRequest(event.target.value)}
+                placeholder="Describe the game idea..."
+                value={gameRequest}
+              />
+              <button
+                className="mt-4 h-12 w-full rounded-full bg-slate-950 px-5 text-base font-medium text-white transition hover:bg-slate-900 disabled:cursor-not-allowed disabled:bg-slate-300"
+                disabled={!gameRequest.trim()}
+                type="submit"
+              >
+                Submit request
+              </button>
+            </form>
+          </div>
+        ) : null}
         {joinModalOpen ? (
-          <div className="modal-backdrop fixed inset-0 z-40 grid place-items-center bg-white/55 px-5 backdrop-blur-xl">
+          <div
+            className="modal-backdrop fixed inset-0 z-40 grid place-items-center bg-white/55 px-5 backdrop-blur-xl"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget && !isJoining) {
+                setJoinCode("");
+                setJoinError("");
+                setJoinModalOpen(false);
+              }
+            }}
+          >
             <div className="modal-panel w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 text-center shadow-[0_28px_90px_rgba(15,23,42,0.18)]">
+              <div
+                aria-hidden="true"
+                className="join-modal-blob mx-auto mb-5 h-24 w-28"
+              >
+                <svg className="h-full w-full" viewBox="0 0 130 110">
+                  <defs>
+                    <linearGradient id="joinBlobGradient" x1="28" x2="88" y1="20" y2="96">
+                      <stop offset="0" stopColor="#BFDBFE" />
+                      <stop offset="0.58" stopColor="#93C5FD" />
+                      <stop offset="1" stopColor="#60A5FA" />
+                    </linearGradient>
+                  </defs>
+                  <ellipse cx="62" cy="98" fill="#E2E8F0" opacity="0.46" rx="35" ry="7" />
+                  <g className="join-modal-blob-body">
+                    <path
+                      d="M27 62c0-23 14-38 36-38 21 0 35 15 35 38 0 21-14 34-35 34-22 0-36-13-36-34Z"
+                      fill="url(#joinBlobGradient)"
+                    />
+                    <circle cx="52" cy="56" r="5" fill="#111827" />
+                    <circle cx="74" cy="56" r="5" fill="#111827" />
+                    <path
+                      d="M54 71c5 4 12 4 17 0"
+                      fill="none"
+                      stroke="#1E3A8A"
+                      strokeLinecap="round"
+                      strokeWidth="3.5"
+                    />
+                  </g>
+                  <g className="join-modal-code-card">
+                    <rect
+                      x="78"
+                      y="68"
+                      width="34"
+                      height="25"
+                      rx="9"
+                      fill="#FFFFFF"
+                      opacity="0.95"
+                    />
+                    <path
+                      d="M88 80h1M95 80h1M102 80h1"
+                      stroke="#2563EB"
+                      strokeLinecap="round"
+                      strokeWidth="4"
+                    />
+                  </g>
+                  <path
+                    d="M29 42h7M32.5 38.5v7"
+                    stroke="#DBEAFE"
+                    strokeLinecap="round"
+                    strokeWidth="3"
+                  />
+                </svg>
+              </div>
               <h2 className="text-3xl font-bold text-slate-950">Join a game</h2>
               <p className="mt-3 text-base text-slate-500">
                 Enter the 5-character code from your group host.
@@ -6326,7 +7255,60 @@ export default function Home() {
             }}
           >
             <div className="modal-panel w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 text-center shadow-[0_28px_90px_rgba(15,23,42,0.18)]">
-              <h2 className="text-3xl font-bold text-slate-950">Group name</h2>
+              {groupNameModalMode === "start" ? (
+                <div
+                  aria-hidden="true"
+                  className="group-modal-blobs mx-auto mb-5 h-24 w-32"
+                >
+                  <svg className="h-full w-full" viewBox="0 0 150 110">
+                    <defs>
+                      <linearGradient id="groupBlobLeft" x1="24" x2="62" y1="30" y2="88">
+                        <stop offset="0" stopColor="#99F6E4" />
+                        <stop offset="1" stopColor="#2DD4BF" />
+                      </linearGradient>
+                      <linearGradient id="groupBlobCenter" x1="52" x2="103" y1="15" y2="92">
+                        <stop offset="0" stopColor="#C4B5FD" />
+                        <stop offset="1" stopColor="#818CF8" />
+                      </linearGradient>
+                      <linearGradient id="groupBlobRight" x1="90" x2="132" y1="34" y2="88">
+                        <stop offset="0" stopColor="#FBCFE8" />
+                        <stop offset="1" stopColor="#F472B6" />
+                      </linearGradient>
+                    </defs>
+                    <ellipse cx="75" cy="97" fill="#E2E8F0" opacity="0.48" rx="54" ry="8" />
+                    <g className="group-modal-blob group-modal-blob-left">
+                      <path
+                        d="M25 65c0-15 10-25 24-25s23 10 23 25c0 14-9 23-23 23-15 0-24-9-24-23Z"
+                        fill="url(#groupBlobLeft)"
+                      />
+                      <circle cx="42" cy="62" r="4" fill="#111827" />
+                      <circle cx="56" cy="62" r="4" fill="#111827" />
+                      <path d="M43 74c4 3 9 3 13 0" fill="none" stroke="#0F766E" strokeLinecap="round" strokeWidth="3" />
+                    </g>
+                    <g className="group-modal-blob group-modal-blob-center">
+                      <path
+                        d="M48 54c0-19 12-32 30-32s30 13 30 32c0 18-12 30-30 30S48 72 48 54Z"
+                        fill="url(#groupBlobCenter)"
+                      />
+                      <circle cx="68" cy="51" r="5" fill="#111827" />
+                      <circle cx="88" cy="51" r="5" fill="#111827" />
+                      <path d="M69 65c5 4 13 4 18 0" fill="none" stroke="#312E81" strokeLinecap="round" strokeWidth="3.5" />
+                    </g>
+                    <g className="group-modal-blob group-modal-blob-right">
+                      <path
+                        d="M89 66c0-15 10-25 24-25 15 0 24 10 24 25 0 14-9 23-24 23-15 0-24-9-24-23Z"
+                        fill="url(#groupBlobRight)"
+                      />
+                      <circle cx="106" cy="63" r="4" fill="#111827" />
+                      <circle cx="120" cy="63" r="4" fill="#111827" />
+                      <path d="M107 75c4 3 9 3 13 0" fill="none" stroke="#9D174D" strokeLinecap="round" strokeWidth="3" />
+                    </g>
+                  </svg>
+                </div>
+              ) : null}
+              <h2 className="text-3xl font-bold text-slate-950">
+                {groupNameModalMode === "start" ? "Start a group" : "Group name"}
+              </h2>
               <p className="mt-3 text-base text-slate-500">
                 Pick a name everyone in the lobby can recognize.
               </p>
@@ -6357,7 +7339,7 @@ export default function Home() {
                   onClick={saveGroupName}
                   type="button"
                 >
-                  Save
+                  {groupNameModalMode === "start" ? "Create lobby" : "Save"}
                 </button>
               </div>
             </div>
@@ -6573,25 +7555,91 @@ export default function Home() {
     return (
       <main className="min-h-screen bg-white text-slate-950">
         <section className="mx-auto flex min-h-screen w-full max-w-5xl flex-col items-center justify-center px-6 py-10 text-center">
-          <p className="text-sm font-bold uppercase tracking-[0.24em] text-blue-600">
+          <div className="completion-hero relative grid h-32 w-44 place-items-center sm:h-40 sm:w-52">
+            <span className="completion-firework completion-firework-one" />
+            <span className="completion-firework completion-firework-two" />
+            <span className="completion-firework completion-firework-three" />
+            <span className="completion-firework completion-firework-four" />
+            <span className="completion-firework completion-firework-five" />
+            <span className="completion-firework completion-firework-six" />
+            <span className="completion-firework completion-firework-spark completion-firework-nine" />
+            <span className="completion-firework completion-firework-spark completion-firework-ten" />
+            <span className="completion-firework completion-firework-spark completion-firework-eleven" />
+            <svg
+              aria-hidden="true"
+              className="h-auto w-24 overflow-visible sm:w-28"
+              viewBox="0 0 180 160"
+            >
+              <defs>
+                <linearGradient id="completionBlobGradient" x1="52" x2="132" y1="31" y2="128">
+                  <stop offset="0" stopColor="#F0ABFC" />
+                  <stop offset="0.52" stopColor="#A78BFA" />
+                  <stop offset="1" stopColor="#60A5FA" />
+                </linearGradient>
+              </defs>
+              <ellipse cx="90" cy="139" fill="#E2E8F0" opacity="0.5" rx="40" ry="8" />
+              <g className="completion-blob">
+                <path
+                  d="M52 84C52 53 70 34 94 34C122 34 138 54 138 83C138 111 120 127 92 127C67 127 52 111 52 84Z"
+                  fill="url(#completionBlobGradient)"
+                />
+                <circle cx="80" cy="76" fill="white" rx="10" ry="12" />
+                <circle cx="106" cy="76" fill="white" rx="10" ry="12" />
+                <circle cx="84" cy="79" r="4.8" fill="#111827" />
+                <circle cx="102" cy="79" r="4.8" fill="#111827" />
+                <path
+                  d="M80 96Q93 104 106 96"
+                  stroke="#312E81"
+                  fill="none"
+                  strokeLinecap="round"
+                  strokeWidth="4"
+                />
+                <path
+                  d="M61 66C53 62 48 56 45 49"
+                  stroke="#A78BFA"
+                  strokeLinecap="round"
+                  strokeWidth="5"
+                />
+                <path
+                  d="M128 66C136 62 142 56 145 49"
+                  stroke="#60A5FA"
+                  strokeLinecap="round"
+                  strokeWidth="5"
+                />
+              </g>
+            </svg>
+          </div>
+          <p className="mt-6 text-xl font-bold text-slate-950 sm:text-2xl">
             Round complete
           </p>
-          <h1 className="mt-5 text-5xl font-bold tracking-normal text-balance sm:text-7xl">
-            {score} points
+          <h1 className="mt-4 text-3xl font-bold tracking-normal text-balance sm:text-5xl">
+            <span className="inline-flex flex-wrap justify-center">
+              {`You scored ${score.toLocaleString()} points`.split("").map((character, index) => (
+                <span
+                  className="completion-score-character"
+                  key={`${character}-${index}`}
+                  style={{ "--score-character-delay": `${index * 0.035}s` } as React.CSSProperties}
+                >
+                  {character === " " ? "\u00A0" : character}
+                </span>
+              ))}
+            </span>
           </h1>
-          <p className="mt-5 max-w-xl text-xl leading-8 text-slate-600">
-            {playerProfile.username || "Player"} now has{" "}
-            <span className="font-bold text-slate-950">
-              {playerProfile.totalScore.toLocaleString()}
-            </span>{" "}
-            total points saved locally.
+          <p className="mt-5 max-w-xl text-lg font-normal leading-8 text-slate-500">
+            Nice run, {playerProfile.username || "player"}.
           </p>
           <button
-            className="mt-10 h-14 rounded-md bg-slate-950 px-8 text-base font-bold text-white transition hover:bg-slate-800"
+            className="relative mt-10 flex h-14 min-w-52 items-center justify-center rounded-full bg-slate-950 px-8 text-base font-medium text-white shadow-[0_18px_60px_rgba(15,23,42,0.18)] transition hover:-translate-y-0.5 hover:shadow-[0_22px_70px_rgba(15,23,42,0.22)]"
             onClick={returnToStart}
             type="button"
           >
-            Choose category
+            Go home
+            <span
+              className="completion-button-count absolute inset-y-0 right-6 flex items-center text-sm font-normal leading-none tabular-nums text-white/80"
+              key={completionCountdown}
+            >
+              {completionCountdown}
+            </span>
           </button>
         </section>
       </main>
@@ -6638,7 +7686,48 @@ export default function Home() {
         ) : null}
       </div>
 
-      <div className="fixed left-5 top-5 z-20">
+      <div className="fixed left-5 top-5 z-20 flex items-start gap-2">
+        <div className="relative" ref={gameOptionsRef}>
+          <button
+            aria-expanded={gameOptionsOpen}
+            className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/78 px-4 py-2.5 text-sm font-bold text-slate-600 shadow-[0_14px_38px_rgba(15,23,42,0.08)] backdrop-blur-xl transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
+            onClick={() => setGameOptionsOpen((open) => !open)}
+            type="button"
+          >
+            Options
+            <svg
+              className={[
+                "h-4 w-4 transition-transform",
+                gameOptionsOpen ? "rotate-180" : "",
+              ].join(" ")}
+              aria-hidden="true"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <path
+                d="M6 9l6 6 6-6"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="2.25"
+              />
+            </svg>
+          </button>
+          {gameOptionsOpen ? (
+            <div className="popover-menu absolute left-0 top-[calc(100%+0.55rem)] w-44 overflow-hidden rounded-xl border border-slate-200 bg-white/90 p-1 shadow-[0_18px_50px_rgba(15,23,42,0.12)] backdrop-blur-xl">
+              <button
+                className="flex h-11 w-full items-center rounded-lg px-3 text-left text-sm font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-950"
+                onClick={() => {
+                  setGameOptionsOpen(false);
+                  setEndGameConfirmOpen(true);
+                }}
+                type="button"
+              >
+                End game
+              </button>
+            </div>
+          ) : null}
+        </div>
         <div className="relative" ref={gameLeaderboardRef}>
           <button
             aria-expanded={gameLeaderboardOpen}
@@ -6749,6 +7838,40 @@ export default function Home() {
         <ScoreTicker delta={scoreDelta} score={score} />
       </div>
 
+      {endGameConfirmOpen ? (
+        <div
+          className="modal-backdrop fixed inset-0 z-40 grid place-items-center bg-white/55 px-5 backdrop-blur-xl"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setEndGameConfirmOpen(false);
+            }
+          }}
+        >
+          <div className="modal-panel w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 text-center shadow-[0_28px_90px_rgba(15,23,42,0.18)]">
+            <h2 className="text-3xl font-bold text-slate-950">End game?</h2>
+            <p className="mt-3 text-base leading-7 text-slate-500">
+              Your current score will be saved and the round will end now.
+            </p>
+            <div className="mt-6 flex gap-3">
+              <button
+                className="h-12 flex-1 rounded-full border border-slate-200 text-base font-medium text-slate-600 transition hover:border-slate-400 hover:text-slate-950"
+                onClick={() => setEndGameConfirmOpen(false)}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className="h-12 flex-1 rounded-full bg-slate-950 text-base font-medium text-white transition hover:bg-slate-800"
+                onClick={endGameEarly}
+                type="button"
+              >
+                End game
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <section className="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-5 pb-36 pt-20 sm:px-8">
         <div
           className="question-stage flex flex-1 flex-col items-center justify-center gap-8 lg:gap-10"
@@ -6766,18 +7889,20 @@ export default function Home() {
             <section
               className="question-prompt mx-auto w-full max-w-5xl text-center"
             >
-              <div className="mb-5 flex justify-center">
-                <div className="inline-flex items-center rounded-full border border-slate-200 bg-white/82 px-4 py-2 text-sm font-bold text-slate-700 shadow-[0_14px_38px_rgba(15,23,42,0.08)] backdrop-blur-xl">
-                  <span>
-                    {getQuestionPillLabel(
-                      selectedGameMode,
-                      selectedCategory,
-                      roundQuestionNumber,
-                      roundQuestionTotal,
-                    )}
-                  </span>
+              {!isDontSayMode ? (
+                <div className="mb-5 flex justify-center">
+                  <div className="inline-flex items-center rounded-full border border-slate-200 bg-white/82 px-4 py-2 text-sm font-bold text-slate-700 shadow-[0_14px_38px_rgba(15,23,42,0.08)] backdrop-blur-xl">
+                    <span>
+                      {getQuestionPillLabel(
+                        selectedGameMode,
+                        selectedCategory,
+                        roundQuestionNumber,
+                        roundQuestionTotal,
+                      )}
+                    </span>
+                  </div>
                 </div>
-              </div>
+              ) : null}
               <h1
                 className={[
                   "text-5xl font-bold leading-[0.98] tracking-normal text-balance sm:text-6xl",
@@ -6981,9 +8106,11 @@ export default function Home() {
                   ].join(" ")}
                 >
                   {dontSayValidationPending ? (
-                    <span className="inline-flex items-center gap-2">
+                    <span
+                      aria-label="Validating"
+                      className="inline-flex items-center justify-center"
+                    >
                       <span className="join-spinner h-4 w-4 rounded-full border-2 border-slate-300 border-t-slate-950" />
-                      <span>Validating</span>
                     </span>
                   ) : (
                     answerAreaMessage ||
@@ -7020,10 +8147,10 @@ export default function Home() {
             onClick={toggleVoiceInput}
             title={
               voiceStatus === "connecting"
-                ? "Connecting OpenAI voice"
+                ? "Connecting Whisper voice"
                 : voiceModeEnabled
-                  ? "Turn OpenAI voice mode off"
-                  : "Turn OpenAI voice mode on"
+                  ? "Turn Whisper voice mode off"
+                  : "Turn Whisper voice mode on"
             }
             type="button"
           >
@@ -7078,7 +8205,7 @@ export default function Home() {
           <button
             aria-label="Skip for later"
             className="flex h-11 items-center gap-2 rounded-full border border-slate-200 bg-white/82 px-4 text-sm font-bold text-slate-500 shadow-[0_18px_60px_rgba(15,23,42,0.1)] backdrop-blur-xl transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-35"
-            disabled={status !== "playing" || questionQueue.length <= 1}
+            disabled={status !== "playing" || (!isDontSayMode && questionQueue.length <= 1)}
             onClick={skipQuestion}
             title="Skip for later"
             type="button"

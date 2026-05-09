@@ -1,0 +1,21 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="classicBlob" x1="54" y1="42" x2="206" y2="211" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A78BFA"/>
+      <stop offset="1" stop-color="#67E8F9"/>
+    </linearGradient>
+    <filter id="classicShadow" x="24" y="32" width="208" height="202" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="15" stdDeviation="13" flood-color="#64748B" flood-opacity="0.16"/>
+    </filter>
+  </defs>
+  <g filter="url(#classicShadow)">
+    <path d="M55 136C48 83 84 47 129 45C180 42 214 83 211 134C209 185 169 214 116 207C77 202 61 178 55 136Z" fill="url(#classicBlob)"/>
+    <circle cx="102" cy="117" r="11" fill="#172554"/>
+    <circle cx="153" cy="117" r="11" fill="#172554"/>
+    <path d="M106 153C119 164 139 164 152 153" stroke="#172554" stroke-width="9" stroke-linecap="round"/>
+    <rect x="48" y="57" width="42" height="42" rx="13" fill="#FFFFFF" fill-opacity="0.72"/>
+    <path d="M60 71H78M60 84H72" stroke="#7C3AED" stroke-width="6" stroke-linecap="round"/>
+    <rect x="170" y="61" width="38" height="38" rx="12" fill="#FFFFFF" fill-opacity="0.66"/>
+    <path d="M182 75H196M182 87H192" stroke="#0891B2" stroke-width="6" stroke-linecap="round"/>
+  </g>
+</svg>

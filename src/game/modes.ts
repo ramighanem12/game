@@ -18,8 +18,10 @@ export const categories = [
 export type Category = (typeof categories)[number];
 export type QuestionCategory = Exclude<Category, "General"> | "General";
 
-export const gameModes = ["classic", "dont-say"] as const;
+export const gameModes = ["classic", "dont-say", "karaoke", "taboo"] as const;
 export type GameMode = (typeof gameModes)[number];
+export const playableGameModes = ["classic", "dont-say"] as const satisfies readonly GameMode[];
+export type PlayableGameMode = (typeof playableGameModes)[number];
 
 export const difficulties = ["easy", "medium", "hard"] as const;
 export type Difficulty = (typeof difficulties)[number];
@@ -35,10 +37,22 @@ export const gameModeMeta: Record<
       "One question at a time. Correct answers score points, speed adds a bonus, and wrong guesses can cost you.",
   },
   "dont-say": {
-    title: "Don't say what AI says",
+    title: "Survivor",
     body: "Avoid the AI's hidden pick at all costs.",
     detail:
       "The AI secretly chooses an answer. Your answer has to count, but if it matches the AI's hidden pick, you're eliminated. The game runs until one player is left standing.",
+  },
+  karaoke: {
+    title: "Karaoke",
+    body: "Sing the line, catch the lyric, keep the streak alive.",
+    detail:
+      "A voice-first music game where players sing or speak missing lyrics, hooks, and song moments against the clock.",
+  },
+  taboo: {
+    title: "Taboo",
+    body: "Give clues without saying the forbidden words.",
+    detail:
+      "A clue-giving game where players help teammates guess the target while avoiding blocked words and obvious shortcuts.",
   },
 };
 
@@ -55,6 +69,8 @@ export type DontSayQuestion = {
   prompt: string;
   guidance: string;
   examples: string[];
+  validationMode: "open" | "finite";
+  acceptedAnswers: string[];
 };
 
 export type DontSaySecret = {
@@ -75,6 +91,7 @@ type DontSaySeed = [
   prompt: string,
   guidance: string,
   examples: string[],
+  validationMode?: "open" | "finite",
 ];
 
 const dontSaySeeds: DontSaySeed[] = [
@@ -239,7 +256,7 @@ const dontSayPromptPools: Partial<
   },
 };
 
-const sharedDontSayPromptPools: Record<
+const generalDontSayPromptPools: Record<
   Difficulty,
   Array<[prompt: string, examples: string[]]>
 > = {
@@ -294,6 +311,171 @@ const generalDontSaySeeds = dontSaySeeds.filter(
   ([category]) => category === "General",
 );
 
+const generatedGeneralDontSaySeeds: DontSaySeed[] = difficulties.flatMap((difficulty) =>
+  generalDontSayPromptPools[difficulty].map(([prompt, examples]) => [
+    "General",
+    difficulty,
+    prompt,
+    `Any answer that satisfies "${prompt}" counts.`,
+    examples,
+  ] satisfies DontSaySeed),
+);
+
+const categoryPromptFillers: Partial<
+  Record<
+    Exclude<Category, "General">,
+    Array<[
+      prompt: string,
+      examples: string[],
+      validationMode?: "open" | "finite",
+    ]>
+  >
+> = {
+  Flags: [
+    ["Name a country with a tricolor flag", ["France", "Italy", "Ireland", "Romania"], "open"],
+    ["Name a country with a flag that includes a cross", ["United Kingdom", "Switzerland", "Sweden", "Norway"], "open"],
+    ["Name a country with yellow on its flag", ["Brazil", "Germany", "Spain", "Colombia"], "open"],
+    ["Name a country with black on its flag", ["Germany", "Belgium", "Jamaica", "Kenya"], "open"],
+    ["Name a country with an animal on its flag", ["Mexico", "Albania", "Bhutan", "Sri Lanka"], "open"],
+    ["Name a country with a sun on its flag", ["Japan", "Argentina", "Uruguay", "Philippines"], "open"],
+    ["Name a country with a maple leaf on its flag", ["Canada"], "finite"],
+    ["Name a country with a dragon on its flag", ["Bhutan", "Wales"], "finite"],
+    ["Name a country with a Union Jack on its flag", ["Australia", "New Zealand", "Fiji", "Tuvalu"], "finite"],
+  ],
+  Capitals: [
+    ["Name a capital city in South America", ["Lima", "Bogota", "Santiago", "Buenos Aires"]],
+    ["Name a capital city in Oceania", ["Canberra", "Wellington", "Suva", "Apia"]],
+    ["Name a capital city that starts with B", ["Berlin", "Bern", "Bogota", "Brussels"]],
+    ["Name a capital city on a coast", ["Lisbon", "Tokyo", "Buenos Aires", "Dublin"]],
+    ["Name a capital city on an island", ["Tokyo", "Dublin", "Reykjavik", "Wellington"]],
+    ["Name a capital city with six letters", ["Madrid", "Athens", "Dublin", "Monaco"]],
+    ["Name a capital city in the European Union", ["Paris", "Rome", "Madrid", "Berlin"]],
+    ["Name a capital city in the Middle East", ["Riyadh", "Amman", "Doha", "Beirut"]],
+    ["Name a capital city in Scandinavia", ["Oslo", "Stockholm", "Copenhagen", "Helsinki"]],
+  ],
+  Geography: [
+    ["Name a US state", ["California", "Texas", "Florida", "New York"]],
+    ["Name a mountain", ["Everest", "Kilimanjaro", "Denali", "Fuji"]],
+    ["Name a lake", ["Lake Superior", "Lake Victoria", "Lake Michigan", "Lake Baikal"]],
+    ["Name a country with a coastline", ["Italy", "Brazil", "Canada", "Australia"]],
+    ["Name a place in the Arctic", ["Greenland", "Svalbard", "Alaska", "Nunavut"]],
+    ["Name a major island", ["Greenland", "Madagascar", "Borneo", "Honshu"]],
+    ["Name a volcano", ["Vesuvius", "Etna", "Krakatoa", "Mauna Loa"]],
+    ["Name a peninsula", ["Iberian Peninsula", "Arabian Peninsula", "Korean Peninsula", "Yucatan Peninsula"]],
+    ["Name a strait", ["Strait of Gibraltar", "Bering Strait", "Bosporus", "Strait of Hormuz"]],
+  ],
+  People: [
+    ["Name a famous writer", ["Shakespeare", "Toni Morrison", "Jane Austen", "Mark Twain"]],
+    ["Name a famous athlete", ["Serena Williams", "Lionel Messi", "Michael Jordan", "Simone Biles"]],
+    ["Name a US president", ["Washington", "Lincoln", "Obama", "Biden"]],
+    ["Name a famous painter", ["Picasso", "Van Gogh", "Frida Kahlo", "Monet"]],
+    ["Name a famous inventor", ["Edison", "Tesla", "Bell", "Da Vinci"]],
+    ["Name a famous woman in history", ["Cleopatra", "Rosa Parks", "Marie Curie", "Amelia Earhart"]],
+    ["Name a famous musician", ["Beyonce", "Prince", "Taylor Swift", "Bob Dylan"]],
+    ["Name a famous director", ["Spielberg", "Scorsese", "Christopher Nolan", "Greta Gerwig"]],
+    ["Name a famous civil rights leader", ["Martin Luther King Jr", "Rosa Parks", "Nelson Mandela", "Malcolm X"]],
+  ],
+  Landmarks: [
+    ["Name a landmark in Asia", ["Taj Mahal", "Great Wall of China", "Angkor Wat", "Petra"]],
+    ["Name a landmark in Africa", ["Pyramids of Giza", "Table Mountain", "Abu Simbel", "Karnak Temple"]],
+    ["Name a landmark in North America", ["Statue of Liberty", "Golden Gate Bridge", "Mount Rushmore", "CN Tower"]],
+    ["Name a landmark in Australia", ["Sydney Opera House", "Uluru", "Great Barrier Reef", "Harbour Bridge"]],
+    ["Name a castle or palace", ["Buckingham Palace", "Versailles", "Neuschwanstein", "Alhambra"]],
+    ["Name a famous bridge", ["Golden Gate Bridge", "Tower Bridge", "Brooklyn Bridge", "Rialto Bridge"]],
+    ["Name a famous tower", ["Eiffel Tower", "Burj Khalifa", "Leaning Tower of Pisa", "CN Tower"]],
+    ["Name a landmark built before 1500", ["Colosseum", "Great Wall of China", "Machu Picchu", "Pyramids of Giza"]],
+    ["Name a landmark in a capital city", ["Eiffel Tower", "Big Ben", "Colosseum", "Brandenburg Gate"]],
+  ],
+  Animals: [
+    ["Name a big cat", ["lion", "tiger", "leopard", "jaguar"]],
+    ["Name a primate", ["gorilla", "chimpanzee", "orangutan", "lemur"]],
+    ["Name a hoofed animal", ["horse", "zebra", "deer", "goat"]],
+    ["Name an animal that can fly", ["eagle", "bat", "falcon", "butterfly"]],
+    ["Name an animal that lays eggs", ["chicken", "turtle", "duck", "platypus"]],
+    ["Name an endangered animal", ["tiger", "rhino", "orangutan", "panda"]],
+    ["Name a nocturnal animal", ["bat", "owl", "raccoon", "fox"]],
+    ["Name an animal with horns or antlers", ["deer", "goat", "rhino", "moose"]],
+    ["Name a farm animal", ["cow", "pig", "chicken", "sheep"]],
+  ],
+  Science: [
+    ["Name a gas", ["oxygen", "nitrogen", "helium", "hydrogen"]],
+    ["Name a human organ", ["heart", "brain", "liver", "lung"]],
+    ["Name a branch of science", ["biology", "chemistry", "physics", "astronomy"]],
+    ["Name a unit of measurement", ["meter", "second", "kelvin", "ampere"]],
+    ["Name a constellation", ["Orion", "Ursa Major", "Cassiopeia", "Scorpius"]],
+    ["Name a moon in the solar system", ["Europa", "Titan", "Ganymede", "Io"]],
+    ["Name a type of rock", ["granite", "basalt", "limestone", "sandstone"]],
+    ["Name a disease caused by a virus", ["flu", "COVID-19", "measles", "chickenpox"]],
+    ["Name a lab tool", ["microscope", "beaker", "pipette", "test tube"]],
+  ],
+  Sports: [
+    ["Name a Winter Olympic sport", ["skiing", "snowboarding", "ice hockey", "curling"]],
+    ["Name a sport played on ice", ["ice hockey", "figure skating", "curling", "speed skating"]],
+    ["Name a racket sport", ["tennis", "badminton", "squash", "pickleball"]],
+    ["Name a team sport", ["soccer", "basketball", "baseball", "football"]],
+    ["Name a track and field event", ["sprint", "long jump", "shot put", "high jump"]],
+    ["Name a sport played in water", ["swimming", "water polo", "diving", "surfing"]],
+    ["Name a famous sports league", ["NBA", "NFL", "MLB", "Premier League"]],
+    ["Name a sport with a goal or net", ["soccer", "hockey", "lacrosse", "handball"]],
+    ["Name a sport played at Wimbledon", ["tennis"]],
+  ],
+  "Movies & TV": [
+    ["Name a Star Wars character", ["Luke Skywalker", "Darth Vader", "Leia", "Yoda"]],
+    ["Name a Pixar movie", ["Toy Story", "Finding Nemo", "Up", "Inside Out"]],
+    ["Name a Marvel character", ["Spider-Man", "Iron Man", "Black Panther", "Thor"]],
+    ["Name a TV drama", ["Breaking Bad", "The Sopranos", "Succession", "The Crown"]],
+    ["Name a streaming TV series", ["Stranger Things", "The Bear", "Ted Lasso", "The Mandalorian"]],
+    ["Name an animated TV show", ["The Simpsons", "SpongeBob", "Avatar", "Bob's Burgers"]],
+    ["Name a movie musical", ["La La Land", "Chicago", "The Sound of Music", "Grease"]],
+    ["Name a Best Picture winner", ["Parasite", "Moonlight", "Titanic", "Gladiator"]],
+    ["Name a Christopher Nolan movie", ["Inception", "Oppenheimer", "Dunkirk", "Interstellar"]],
+  ],
+  Music: [
+    ["Name a pop star", ["Taylor Swift", "Beyonce", "Ariana Grande", "Harry Styles"]],
+    ["Name a rock band from the UK", ["The Beatles", "Queen", "Radiohead", "Oasis"]],
+    ["Name a singer-songwriter", ["Bob Dylan", "Joni Mitchell", "Taylor Swift", "Ed Sheeran"]],
+    ["Name a classical composer", ["Mozart", "Beethoven", "Bach", "Chopin"]],
+    ["Name a female rapper", ["Nicki Minaj", "Missy Elliott", "Cardi B", "Doja Cat"]],
+    ["Name a music genre", ["pop", "rock", "hip hop", "jazz"]],
+    ["Name a Grammy-winning artist", ["Adele", "Beyonce", "Taylor Swift", "Kendrick Lamar"]],
+    ["Name a band with one-word name", ["Queen", "Nirvana", "Coldplay", "Radiohead"]],
+    ["Name a Motown artist", ["Stevie Wonder", "Marvin Gaye", "Diana Ross", "The Supremes"]],
+  ],
+  Songs: [
+    ["Name a song by Queen", ["Bohemian Rhapsody", "We Will Rock You", "Radio Ga Ga", "Don't Stop Me Now"]],
+    ["Name a song by Beyonce", ["Halo", "Crazy in Love", "Single Ladies", "Formation"]],
+    ["Name a song with a color in the title", ["Purple Rain", "Blackbird", "Yellow", "Blue Suede Shoes"]],
+    ["Name a song with a city in the title", ["New York, New York", "Empire State of Mind", "Viva Las Vegas", "London Calling"]],
+    ["Name a Christmas song", ["Jingle Bells", "Last Christmas", "All I Want for Christmas Is You", "Silent Night"]],
+    ["Name a song by Michael Jackson", ["Billie Jean", "Thriller", "Beat It", "Smooth Criminal"]],
+    ["Name a song from the 1980s", ["Take On Me", "Billie Jean", "Like a Prayer", "Sweet Dreams"]],
+    ["Name a song with a person's name in the title", ["Hey Jude", "Billie Jean", "Roxanne", "Jolene"]],
+    ["Name a song by Adele", ["Hello", "Rolling in the Deep", "Someone Like You", "Easy on Me"]],
+  ],
+  Food: [
+    ["Name a vegetable", ["carrot", "broccoli", "spinach", "potato"]],
+    ["Name a dessert", ["cake", "ice cream", "pie", "baklava"]],
+    ["Name a cheese", ["cheddar", "brie", "mozzarella", "parmesan"]],
+    ["Name a soup", ["tomato soup", "miso soup", "ramen", "minestrone"]],
+    ["Name a street food", ["taco", "falafel", "hot dog", "kebab"]],
+    ["Name a spice", ["cinnamon", "cumin", "paprika", "turmeric"]],
+    ["Name a bread", ["baguette", "pita", "sourdough", "naan"]],
+    ["Name a dish with rice", ["risotto", "paella", "sushi", "biryani"]],
+    ["Name a food from Lebanon", ["hummus", "tabbouleh", "falafel", "kibbeh"]],
+  ],
+  History: [
+    ["Name a historical revolution", ["French Revolution", "American Revolution", "Russian Revolution", "Haitian Revolution"]],
+    ["Name an ancient ruler", ["Cleopatra", "Julius Caesar", "Augustus", "Hammurabi"]],
+    ["Name a World War II leader", ["Churchill", "Roosevelt", "Stalin", "Hitler"]],
+    ["Name a historical document", ["Magna Carta", "Declaration of Independence", "Constitution", "Treaty of Versailles"]],
+    ["Name an explorer", ["Columbus", "Magellan", "Marco Polo", "Zheng He"]],
+    ["Name a civil rights figure", ["Martin Luther King Jr", "Rosa Parks", "Malcolm X", "Nelson Mandela"]],
+    ["Name an ancient city", ["Rome", "Athens", "Babylon", "Carthage"]],
+    ["Name a dynasty", ["Ming", "Qing", "Tudor", "Romanov"]],
+    ["Name a historical invention", ["printing press", "telephone", "steam engine", "wheel"]],
+  ],
+};
+
 const generatedCategoryDontSaySeeds: DontSaySeed[] = categories
   .filter((category): category is Exclude<Category, "General"> => category !== "General")
   .flatMap((category) =>
@@ -309,12 +491,22 @@ const generatedCategoryDontSaySeeds: DontSaySeed[] = categories
 
       const authoredPrompts = [
         ...(dontSayPromptPools[category]?.[difficulty] ?? []),
-        ...templates.map(([, , prompt, , examples]) => [prompt, examples] as [string, string[]]),
-        ...sharedDontSayPromptPools[difficulty],
+        ...templates.map(
+          ([, , prompt, , examples, validationMode]) =>
+            [prompt, examples, validationMode] as [
+              string,
+              string[],
+              "open" | "finite" | undefined,
+            ],
+        ),
+        ...(categoryPromptFillers[category] ?? []),
       ];
 
-      return authoredPrompts.slice(0, 15).map(([prompt, examples]) => {
-        const guidance = `Any answer that satisfies "${prompt}" counts. Reject answers that do not fit that exact category.`;
+      return authoredPrompts.slice(0, 15).map(([prompt, examples, validationMode]) => {
+        const isFinite = validationMode === "finite";
+        const guidance = isFinite
+          ? `Only these answers count for "${prompt}": ${examples.join(", ")}. Reject every other answer.`
+          : `Any answer that satisfies "${prompt}" counts. Reject answers that do not fit that exact category.`;
 
         return [
           category,
@@ -322,12 +514,64 @@ const generatedCategoryDontSaySeeds: DontSaySeed[] = categories
           prompt,
           guidance,
           examples,
+          validationMode ?? "open",
         ] satisfies DontSaySeed;
       });
     }),
   );
 
 const supplementalDontSayExamples: Record<string, string[]> = {
+  "Name a landmark in a capital city": [
+    "Eiffel Tower",
+    "Big Ben",
+    "Colosseum",
+    "Brandenburg Gate",
+    "Louvre",
+    "Buckingham Palace",
+    "Westminster Abbey",
+    "Trevi Fountain",
+    "Pantheon",
+    "Acropolis",
+    "Parthenon",
+    "Senso-ji",
+    "Tokyo Tower",
+    "Imperial Palace",
+    "Forbidden City",
+    "Tiananmen Square",
+    "Red Square",
+    "Kremlin",
+    "St. Basil's Cathedral",
+    "Prague Castle",
+    "Charles Bridge",
+    "Hagia Sophia",
+    "Blue Mosque",
+    "Topkapi Palace",
+    "Dublin Castle",
+    "Christ Church Cathedral",
+    "Palacio Real",
+    "Plaza Mayor",
+    "Belem Tower",
+    "Jeronimos Monastery",
+    "Little Mermaid",
+    "Amalienborg",
+    "Royal Palace of Stockholm",
+    "Oslo Opera House",
+    "Parliament Hill",
+    "Casa Rosada",
+    "Obelisco",
+    "Moneda Palace",
+    "Plaza de Mayo",
+    "Qutub Minar",
+    "India Gate",
+    "Lotus Temple",
+    "Humayun's Tomb",
+    "Grand Palace",
+    "Wat Arun",
+    "Wat Pho",
+    "Petronas Towers",
+    "National Mosque",
+    "Sheikh Zayed Grand Mosque",
+  ],
   "Name a mammal": [
     "dog",
     "cat",
@@ -490,7 +734,7 @@ const getBroadDontSayExamples = (prompt: string) => {
     return ["Paris", "Berlin", "Madrid", "Rome", "London", "Tokyo", "Seoul", "Beijing", "Cairo", "Nairobi", "Ottawa", "Mexico City", "Buenos Aires", "Lima", "Ankara", "Oslo", "Stockholm", "Athens", "Dublin", "Lisbon"];
   }
 
-  if (lowerPrompt.includes("landmark")) {
+  if (lowerPrompt === "name a famous landmark") {
     return ["Eiffel Tower", "Statue of Liberty", "Taj Mahal", "Great Wall of China", "Colosseum", "Big Ben", "Machu Picchu", "Christ the Redeemer", "Petra", "Stonehenge", "Sagrada Familia", "Sydney Opera House", "Angkor Wat", "Mount Rushmore", "Burj Khalifa"];
   }
 
@@ -543,19 +787,26 @@ const getBroadDontSayExamples = (prompt: string) => {
 
 export const dontSayQuestions: DontSayQuestion[] = [
   ...generalDontSaySeeds,
+  ...generatedGeneralDontSaySeeds,
   ...generatedCategoryDontSaySeeds,
 ].map(
-  ([category, difficulty, prompt, guidance, examples], index) => ({
-    id: `${category}-${difficulty}-${index}-${prompt
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "")}`,
-    category,
-    difficulty,
-    prompt,
-    guidance,
-    examples: expandDontSayExamples(prompt, examples),
-  }),
+  ([category, difficulty, prompt, guidance, examples, validationMode], index) => {
+    const expandedExamples = expandDontSayExamples(prompt, examples);
+
+    return {
+      id: `${category}-${difficulty}-${index}-${prompt
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "")}`,
+      category,
+      difficulty,
+      prompt,
+      guidance,
+      examples: expandedExamples,
+      validationMode: validationMode ?? "open",
+      acceptedAnswers: validationMode === "finite" ? examples : expandedExamples,
+    };
+  },
 );
 
 export const getDontSayQuestions = (category: Category, difficulty?: Difficulty) => {

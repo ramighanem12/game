@@ -90,6 +90,133 @@ button:not(:disabled) {
   transform-origin: center;
 }
 
+.completion-hero {
+  animation: completion-hero-in 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.completion-blob {
+  animation: completion-blob-bounce 2.6s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  transform-box: fill-box;
+  transform-origin: center bottom;
+}
+
+.completion-firework {
+  position: absolute;
+  width: 0.28rem;
+  height: 0.28rem;
+  border-radius: 999px;
+  opacity: 0;
+  animation: completion-firework-pop 1.65s ease-out infinite;
+}
+
+.completion-firework::before,
+.completion-firework::after {
+  content: "";
+  position: absolute;
+  inset: -0.72rem;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle, currentColor 0 0.09rem, transparent 0.1rem) 50% 0 / 100% 100%,
+    radial-gradient(circle, currentColor 0 0.08rem, transparent 0.09rem) 50% 100% / 100% 100%,
+    radial-gradient(circle, currentColor 0 0.08rem, transparent 0.09rem) 0 50% / 100% 100%,
+    radial-gradient(circle, currentColor 0 0.08rem, transparent 0.09rem) 100% 50% / 100% 100%;
+  background-repeat: no-repeat;
+}
+
+.completion-firework::after {
+  transform: rotate(45deg);
+}
+
+.completion-firework-spark {
+  width: 0.18rem;
+  height: 0.18rem;
+}
+
+.completion-firework-spark::before,
+.completion-firework-spark::after {
+  inset: -0.9rem;
+  background:
+    linear-gradient(currentColor, currentColor) 50% 0 / 0.1rem 0.42rem,
+    linear-gradient(currentColor, currentColor) 50% 100% / 0.1rem 0.42rem,
+    linear-gradient(90deg, currentColor, currentColor) 0 50% / 0.42rem 0.1rem,
+    linear-gradient(90deg, currentColor, currentColor) 100% 50% / 0.42rem 0.1rem;
+  background-repeat: no-repeat;
+}
+
+.completion-firework-one {
+  left: 2.2rem;
+  top: 2.5rem;
+  color: #f472b6;
+}
+
+.completion-firework-two {
+  right: 2.4rem;
+  top: 2.25rem;
+  color: #38bdf8;
+  animation-delay: 0.32s;
+}
+
+.completion-firework-three {
+  bottom: 2.9rem;
+  right: 3.8rem;
+  color: #fbbf24;
+  animation-delay: 0.64s;
+}
+
+.completion-firework-four {
+  left: 3.5rem;
+  bottom: 2.7rem;
+  color: #34d399;
+  animation-delay: 0.18s;
+}
+
+.completion-firework-five {
+  left: 50%;
+  top: 1.25rem;
+  color: #a78bfa;
+  animation-delay: 0.48s;
+}
+
+.completion-firework-six {
+  right: 1.9rem;
+  bottom: 4.4rem;
+  color: #fb923c;
+  animation-delay: 0.82s;
+}
+
+.completion-firework-nine {
+  left: 4.75rem;
+  top: 0.75rem;
+  color: #f59e0b;
+  animation-delay: 0.08s;
+}
+
+.completion-firework-ten {
+  right: 5rem;
+  bottom: 1.25rem;
+  color: #06b6d4;
+  animation-delay: 0.72s;
+}
+
+.completion-firework-eleven {
+  left: 0.85rem;
+  bottom: 4.55rem;
+  color: #8b5cf6;
+  animation-delay: 1.32s;
+}
+
+.completion-score-character {
+  --score-character-delay: 0s;
+  display: inline-block;
+  animation: completion-score-cascade 0.72s cubic-bezier(0.16, 1, 0.3, 1)
+    var(--score-character-delay) both;
+  transform-origin: center bottom;
+}
+
+.completion-button-count {
+  animation: completion-button-count-in 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
 .question-stage {
   animation: question-stage-in 0.44s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
@@ -407,6 +534,87 @@ button:not(:disabled) {
   45% {
     opacity: 1;
     transform: scale(1.04);
+  }
+
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes completion-hero-in {
+  0% {
+    opacity: 0;
+    transform: translateY(12px) scale(0.92);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes completion-blob-bounce {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg) scale(1);
+  }
+
+  20% {
+    transform: translateY(-7px) rotate(-1.5deg) scale(1.02, 0.985);
+  }
+
+  42% {
+    transform: translateY(0) rotate(1deg) scale(1);
+  }
+}
+
+@keyframes completion-firework-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(5px) scale(0.2) rotate(0deg);
+  }
+
+  18% {
+    opacity: 0.95;
+  }
+
+  72% {
+    opacity: 0;
+    transform: translateY(-3px) scale(1.28) rotate(18deg);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translateY(-3px) scale(1.28) rotate(18deg);
+  }
+}
+
+@keyframes completion-score-cascade {
+  0% {
+    opacity: 0;
+    transform: translateY(0.42em) scale(0.92);
+  }
+
+  42% {
+    opacity: 1;
+    transform: translateY(-0.22em) scale(1.04);
+  }
+
+  68% {
+    transform: translateY(0.06em) scale(0.99);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes completion-button-count-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.72);
   }
 
   100% {
@@ -844,6 +1052,245 @@ button:not(:disabled) {
   }
 }
 
+.home-enter {
+  animation: home-enter-up 720ms cubic-bezier(0.2, 0.82, 0.18, 1) both;
+  will-change: opacity, transform, filter;
+}
+
+.home-enter-title {
+  animation-delay: 30ms;
+}
+
+.home-enter-subtitle {
+  animation-delay: 110ms;
+}
+
+.home-enter-builder {
+  animation-delay: 200ms;
+}
+
+.home-enter-info {
+  animation-delay: 280ms;
+}
+
+.home-enter-cta {
+  animation-delay: 360ms;
+}
+
+.home-game-blob {
+  animation-delay: 0ms;
+}
+
+.home-game-blob svg {
+  overflow: visible;
+}
+
+.home-game-blob-body {
+  transform-origin: 82px 64px;
+  animation: home-game-blob-body-bob 3.8s ease-in-out infinite;
+}
+
+.home-game-blob-friend {
+  transform-origin: 44px 70px;
+  animation: home-game-blob-friend-bob 3.2s ease-in-out infinite;
+  animation-delay: 160ms;
+}
+
+.home-game-question-chip {
+  transform-origin: 99px 33px;
+  animation: home-game-question-chip-float 3.8s ease-in-out infinite;
+}
+
+.home-game-tune {
+  transform-origin: 35px 39px;
+  animation: home-game-tune-float 3.4s ease-in-out infinite;
+  animation-delay: 120ms;
+}
+
+.group-modal-blobs svg {
+  overflow: visible;
+}
+
+.group-modal-blob {
+  transform-origin: center bottom;
+  animation: group-modal-blob-bob 2.8s ease-in-out infinite;
+}
+
+.group-modal-blob-left {
+  animation-delay: 120ms;
+}
+
+.group-modal-blob-center {
+  animation-delay: 0ms;
+}
+
+.group-modal-blob-right {
+  animation-delay: 240ms;
+}
+
+.join-modal-blob svg {
+  overflow: visible;
+}
+
+.join-modal-blob-body {
+  transform-origin: 63px 64px;
+  animation: join-modal-blob-body-bob 3.1s ease-in-out infinite;
+}
+
+.join-modal-code-card {
+  transform-origin: 95px 81px;
+  animation: join-modal-code-card-pop 3.1s ease-in-out infinite;
+}
+
+.sentence-pill-text-reveal {
+  display: inline-block;
+  animation: sentence-pill-text-reveal 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: opacity, transform;
+}
+
+.games-card-enter {
+  animation: games-card-enter 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: opacity, transform, filter;
+}
+
+@keyframes home-enter-up {
+  0% {
+    opacity: 0;
+    filter: blur(5px);
+    transform: translateY(18px) scale(0.985);
+  }
+
+  62% {
+    opacity: 1;
+    filter: blur(0);
+  }
+
+  100% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes games-card-enter {
+  0% {
+    opacity: 0;
+    filter: blur(4px);
+    transform: translateY(16px) scale(0.975);
+  }
+
+  68% {
+    opacity: 1;
+    filter: blur(0);
+  }
+
+  100% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes sentence-pill-text-reveal {
+  0% {
+    opacity: 0;
+    transform: translateX(-3px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes home-game-blob-body-bob {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+
+  50% {
+    transform: translateY(-5px) scale(1.025, 0.985);
+  }
+}
+
+@keyframes home-game-blob-friend-bob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg) scale(1);
+  }
+
+  50% {
+    transform: translateY(-7px) rotate(-1.5deg) scale(1.035, 0.98);
+  }
+}
+
+@keyframes home-game-blob-squish {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.035, 0.975);
+  }
+}
+
+@keyframes join-modal-blob-body-bob {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+
+  50% {
+    transform: translateY(-4px) scale(1.025, 0.985);
+  }
+}
+
+@keyframes home-game-question-chip-float {
+  0%,
+  100% {
+    transform: translateY(0) rotate(2deg);
+  }
+
+  50% {
+    transform: translateY(-4px) rotate(-2deg);
+  }
+}
+
+@keyframes home-game-tune-float {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-2deg);
+  }
+
+  50% {
+    transform: translateY(-4px) rotate(2deg);
+  }
+}
+
+@keyframes group-modal-blob-bob {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+
+  50% {
+    transform: translateY(-4px) scale(1.025, 0.985);
+  }
+}
+
+@keyframes join-modal-code-card-pop {
+  0%,
+  100% {
+    transform: translateY(0) rotate(2deg) scale(1);
+  }
+
+  50% {
+    transform: translateY(-3px) rotate(-1deg) scale(1.035);
+  }
+}
+
 @keyframes confetti-fall {
   0% {
     opacity: 0;
@@ -858,5 +1305,20 @@ button:not(:disabled) {
     opacity: 0;
     transform: translate3d(calc((var(--spin) * 48px)), 105vh, 0)
       rotate(calc(var(--spin) * 560deg));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-enter,
+  .home-game-blob-body,
+  .home-game-blob-friend,
+  .home-game-question-chip,
+  .home-game-tune,
+  .group-modal-blob,
+  .join-modal-blob-body,
+  .join-modal-code-card,
+  .games-card-enter,
+  .sentence-pill-text-reveal {
+    animation: none;
   }
 }
